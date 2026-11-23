@@ -1,0 +1,8 @@
+Model: "Anime Character Base mesh"
+Author: Marc Ed (https://sketchfab.com/marc.edouard.lepine17)
+Source: https://sketchfab.com/3d-models/anime-character-base-mesh-1ab99094be564a86a0dd21e23cebc5de
+License: Creative Commons Attribution 4.0 International (CC BY 4.0) - http://creativecommons.org/licenses/by/4.0/
+
+The file anime-character-base-mesh.glb is the author's unmodified mesh as supplied. CharacterForge adds a rig
+(joint positions, skin weights, scaling) at load time in src/pose/bodyModel.ts; that is an adaptation of the model.
+If you share the model or images/builds that show it, keep this credit and indicate that it was adapted.

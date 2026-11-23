@@ -1,0 +1,13 @@
+# Core server (required)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+pillow>=10.0
+numpy>=1.26
+
+# --- Optional AI backends: install what you want to use -------------------
+# "Character vs background" (anime-trained foreground matting via ONNX Runtime, CPU):
+#   pip install "rembg[cpu]"
+# "Split into parts" (Segment Anything automatic masks; heavy, PyTorch):
+#   pip install torch torchvision segment-anything opencv-python-headless
+#   then download a checkpoint (see README) and set CF_SAM_CHECKPOINT

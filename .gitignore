@@ -1,0 +1,21 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+*.local
+# Python server
+server/.venv/
+server/__pycache__/
+server/models/
+*.pyc
+# Model weights are never committed
+*.pth
+*.pt
+*.onnx
+*.ckpt
+*.safetensors
+# Local artwork / exports
+*.cfbundle
