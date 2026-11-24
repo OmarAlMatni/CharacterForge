@@ -1,7 +1,7 @@
 {
   "name": "characterforge",
   "private": true,
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "2D-first, 3D-guided manga character posing and illustration studio: character profiles, a Three.js pose mannequin, and a pluggable local generation backend.",
   "type": "module",
   "engines": {
