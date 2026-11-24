@@ -7,6 +7,7 @@ const WORKSPACES: { id: Workspace; label: string; hint: string }[] = [
   { id: 'character', label: 'Character', hint: 'Original artwork, references, appearance' },
   { id: 'studio', label: 'Pose studio', hint: '3D character model: size, pose, project artwork, camera' },
   { id: 'generate', label: 'Generate & review', hint: 'Create a new illustration from the pose, then accept or reject it' },
+  { id: 'page', label: 'Page', hint: 'Lay out manga panels, drop characters in, letter the page, export at print DPI' },
   { id: 'canvas', label: '2D canvas', hint: 'Layers, masks, cropping, transforms, transparent PNG export, 2D puppet rig' },
 ];
 

@@ -8,6 +8,7 @@ import { ExportDialog, HelpDialog, ProjectsDialog, ReportDialog, Toasts } from '
 import { LayoutInspector } from './ui/Inspector.tsx';
 import { LayerPanel } from './ui/LayerPanel.tsx';
 import { MaskEditor } from './ui/MaskEditor.tsx';
+import { PageView } from './ui/PageView.tsx';
 import { PoseInspector, RigInspector } from './ui/RigPanel.tsx';
 import { Toolbar } from './ui/Toolbar.tsx';
 import { lazy, Suspense } from 'react';
@@ -191,6 +192,8 @@ export function App() {
         </Suspense>
       ) : ws === 'generate' ? (
         <GenerateView />
+      ) : ws === 'page' ? (
+        <PageView />
       ) : (
         <div className="workspace">
           <LayerPanel />

@@ -33,6 +33,15 @@ import { fitView } from '../core/math.ts';
 import type { Transform, Vec2, View } from '../core/math.ts';
 import { ProjectFormatError } from '../core/migrations.ts';
 import { addAssetInfo, createProject, pruneUnusedAssets, unusedAssetIds } from '../core/project.ts';
+import {
+  addBubble as addBubbleOp, addPanel as addPanelOp, addPlacement as addPlacementOp, deleteBubble as deleteBubbleOp, deletePanel as deletePanelOp,
+  deletePlacement as deletePlacementOp, emptyPage, movePlacement as movePlacementOp, pageAssetIds, pageExportSize, pagePixelSize, panelLayout, panelContentPolygon,
+  polygonBounds, polygonCentroid, relinkPlacement as relinkPlacementOp, resizePage as resizePageOp, updateBubble as updateBubbleOp, updatePanel as updatePanelOp,
+  updatePlacement as updatePlacementOp,
+} from '../core/page.ts';
+import type { Bubble, BubbleKind, LayoutKind, PageState, Panel, PanelShape, Placement, PlacementSource } from '../core/page.ts';
+import { PageImageCache } from '../render/pageImages.ts';
+import { renderPage } from '../render/pageRender.ts';
 import { LIMITS } from '../core/schema.ts';
 import { humanoidJoints } from '../core/templates.ts';
 import type { DocState, ID, Joint, Layer, ProjectFile } from '../core/types.ts';
@@ -43,7 +52,7 @@ import { ImportError } from '../import/types.ts';
 import { BitmapStore } from '../render/bitmaps.ts';
 import { exportPngBlob, renderExportCanvas } from '../render/export.ts';
 import type { RenderedExport } from '../render/export.ts';
-import { canvasToPngBytes, ctx2d, decodeToCanvas, newCanvas } from '../render/pngEncode.ts';
+import { canvasToBlob, canvasToPngBytes, ctx2d, decodeToCanvas, newCanvas } from '../render/pngEncode.ts';
 import { exportBundle, importBundle } from '../storage/bundle.ts';
 import { getDb } from '../storage/db.ts';
 import { deleteAssets, deleteProject, duplicateProject, saveProject, storeImportedProject, loadProject } from '../storage/projectService.ts';
@@ -63,7 +72,7 @@ function readLocalUrl(): string {
 
 export type Mode = 'layout' | 'rig' | 'pose';
 /** Top-level screens. 'canvas' is the 2D layer editor (layout / rig / 2D pose) kept as a secondary tool. */
-export type Workspace = 'character' | 'studio' | 'generate' | 'canvas';
+export type Workspace = 'character' | 'studio' | 'generate' | 'page' | 'canvas';
 export type SaveState = 'saved' | 'dirty' | 'saving' | 'error';
 export type Dialog =
   | null
@@ -105,11 +114,23 @@ export interface StudioUi {
   modelError: string | null;
 }
 
+export interface PageUi {
+  /** What the page canvas has selected. */
+  selection: { kind: 'panel' | 'placement' | 'bubble'; id: ID } | null;
+  /** Draw panel frames and borders in the preview. */
+  showBorders: boolean;
+  /** Draw lettering in the preview. */
+  showBubbles: boolean;
+  /** Bumped when a decoded page image becomes available, so the canvas re-reads it. */
+  imageRev: number;
+}
+
 export interface UIState {
   workspace: Workspace;
   selectedJoint3d: JointId | null;
   studio: StudioUi;
   generation: GenerationUi;
+  page: PageUi;
   mode: Mode;
   rigTool: 'select' | 'add';
   layoutTool: 'select' | 'pivot';
@@ -129,6 +150,7 @@ export interface Snapshot {
   project: ProjectFile | null;
   doc: DocState | null;
   character: CharacterState | null;
+  page: PageState | null;
   ui: UIState;
   canUndo: boolean;
   canRedo: boolean;
@@ -154,11 +176,13 @@ export class AppStore {
   private project: ProjectFile | null = null;
   private history: History<DocState> | null = null;
   private charHistory: History<CharacterState> | null = null;
+  private pageHistory: History<PageState> | null = null;
   private urls = new Map<ID, string>();
   private genAbort: AbortController | null = null;
   private liveCamera: CameraState | null = null;
   private assets = new Map<ID, AssetData>();
   private artCache = new ArtworkCache();
+  private pageImages = new PageImageCache();
   private fitStop = false;
   private unsaved = new Set<ID>();
   private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -169,6 +193,7 @@ export class AppStore {
     selectedJoint3d: null,
     studio: { pinFeet: false, showHandles: true, showGrid: true, notice: null, artRev: 0, fit: { running: false, fraction: 0, iou: null, message: null }, model: 'idle', modelError: null },
     generation: { running: false, stage: '', checking: false, provider: null, seed: null, localUrl: readLocalUrl(), selectedResultId: null },
+    page: { selection: null, showBorders: true, showBubbles: true, imageRev: 0 },
     mode: 'layout',
     rigTool: 'select',
     layoutTool: 'select',
@@ -198,11 +223,13 @@ export class AppStore {
 
   private build(): Snapshot {
     const h = this.activeHistory();
-    return { project: this.project, doc: this.history ? this.history.present : null, character: this.charHistory ? this.charHistory.present : null, ui: this.ui, canUndo: !!h?.canUndo, canRedo: !!h?.canRedo, undoLabel: h?.undoLabel, redoLabel: h?.redoLabel, rev: this.rev };
+    return { project: this.project, doc: this.history ? this.history.present : null, character: this.charHistory ? this.charHistory.present : null, page: this.pageHistory ? this.pageHistory.present : null, ui: this.ui, canUndo: !!h?.canUndo, canRedo: !!h?.canRedo, undoLabel: h?.undoLabel, redoLabel: h?.redoLabel, rev: this.rev };
   }
-  /** Undo/redo applies to the screen you are on: the 2D canvas has its own history, everything else edits the character profile. */
+  /** Undo/redo applies to the screen you are on: the 2D canvas and the page each have their own history, everything else edits the character profile. */
   private activeHistory(): { canUndo: boolean; canRedo: boolean; undoLabel: string | undefined; redoLabel: string | undefined } | null {
-    return this.ui.workspace === 'canvas' ? this.history : this.charHistory;
+    if (this.ui.workspace === 'canvas') return this.history;
+    if (this.ui.workspace === 'page') return this.pageHistory;
+    return this.charHistory;
   }
   private emit(): void {
     this.rev++;
@@ -294,8 +321,8 @@ export class AppStore {
     if (this.project) this.project = addAssetInfo(this.project, { id: a.id, kind: a.kind, mime: a.mime, width: a.width, height: a.height, size: a.bytes.byteLength });
   }
   private currentFile(now: number): ProjectFile {
-    if (!this.project || !this.history || !this.charHistory) throw new Error('No project is open.');
-    return { ...this.project, updatedAt: now, doc: this.history.present, character: this.charHistory.present };
+    if (!this.project || !this.history || !this.charHistory || !this.pageHistory) throw new Error('No project is open.');
+    return { ...this.project, updatedAt: now, doc: this.history.present, character: this.charHistory.present, page: this.pageHistory.present };
   }
 
   // ---------- view ----------
@@ -384,6 +411,7 @@ export class AppStore {
     this.project = project;
     this.history = new History(project.doc);
     this.charHistory = new History(project.character);
+    this.pageHistory = new History(project.page);
     this.assets = assets;
     this.artCache.clear();
     this.unsaved = new Set();
@@ -1468,6 +1496,260 @@ export class AppStore {
     if (!g || !a) return null;
     const safe = (this.project?.name ?? 'character').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-') || 'character';
     return { bytes: a.bytes, mime: a.mime, fileName: `${safe}-${g.status}-${id.slice(-6)}.${a.mime === 'image/png' ? 'png' : a.mime === 'image/jpeg' ? 'jpg' : 'webp'}` };
+  }
+
+  // ======================================================================
+  // The manga page
+  // ======================================================================
+
+  get page(): PageState | null {
+    return this.pageHistory ? this.pageHistory.present : null;
+  }
+  private needPage(): PageState {
+    if (!this.pageHistory) throw new Error('Open or create a character first.');
+    return this.pageHistory.present;
+  }
+
+  private commitPage(fn: (p: PageState) => PageState, label: string, key?: string): boolean {
+    if (!this.pageHistory) return false;
+    try {
+      const next = fn(this.pageHistory.present);
+      if (next === this.pageHistory.present) return false;
+      this.pageHistory.commit(next, label, key);
+      this.markDirty();
+      this.emit();
+      return true;
+    } catch (e) {
+      this.fail(e);
+      return false;
+    }
+  }
+
+  selectPageItem(selection: PageUi['selection']): void {
+    this.setUi({ page: { ...this.ui.page, selection } });
+  }
+  setPageOption(patch: Partial<Pick<PageUi, 'showBorders' | 'showBubbles'>>): void {
+    this.setUi({ page: { ...this.ui.page, ...patch } });
+  }
+
+  /** Replace the whole panel layout with a named preset. Placements are kept and re-homed to the nearest panel. */
+  applyPageLayout(kind: LayoutKind): void {
+    this.commitPage((p) => {
+      const panels = panelLayout(kind, p);
+      const ids = new Set(panels.map((x) => x.id));
+      return {
+        ...p,
+        panels,
+        placements: p.placements.map((pl) => (pl.panelId && !ids.has(pl.panelId) ? { ...pl, panelId: null } : pl)),
+      };
+    }, 'Page layout');
+  }
+
+  setPageSize(size: { width: number; height: number }, dpi: number): void {
+    this.commitPage((p) => resizePageOp(p, size, dpi), 'Page size');
+  }
+
+  setPageSettings(patch: Partial<Pick<PageState, 'gutter' | 'bleed' | 'borderWidth' | 'background' | 'borderColor'>>): void {
+    this.commitPage((p) => ({ ...p, ...patch }), 'Page settings', 'page-settings');
+  }
+
+  addPanel(shape: PanelShape = 'rect'): void {
+    const p = this.needPage();
+    const s = pagePixelSize(p);
+    const w = s.width * 0.42;
+    const h = s.height * 0.3;
+    const n = p.panels.length;
+    const x = s.width * 0.06 + (n % 2) * (s.width * 0.5);
+    const y = s.height * 0.06 + Math.floor(n / 2) * (s.height * 0.34);
+    const rect = [
+      { x, y },
+      { x: x + w, y },
+      { x: x + w, y: y + h },
+      { x, y: y + h },
+    ];
+    const points = shape === 'skewed' ? [{ x: x + w * 0.12, y }, { x: x + w * 1.12, y }, { x: x + w, y: y + h }, { x, y: y + h }] : rect;
+    const panel: Panel = { id: newId('panel'), name: `Panel ${n + 1}`, shape, points };
+    if (this.commitPage((pg) => addPanelOp(pg, panel), 'Add panel')) this.selectPageItem({ kind: 'panel', id: panel.id });
+  }
+
+  updatePanel(id: ID, patch: Partial<Omit<Panel, 'id'>>): void {
+    this.commitPage((p) => updatePanelOp(p, id, patch), 'Edit panel', `panel:${id}`);
+  }
+
+  deletePanel(id: ID): void {
+    if (this.commitPage((p) => deletePanelOp(p, id), 'Delete panel') && this.ui.page.selection?.id === id) this.selectPageItem(null);
+  }
+
+  /** Place an image on the page. With a panel it is scaled to cover the frame and centred in it. */
+  placeImage(assetId: ID, panelId: ID | null, source: PlacementSource | null): void {
+    const info = this.assets.get(assetId);
+    if (!info) return;
+    const p = this.needPage();
+    const panel = panelId ? p.panels.find((x) => x.id === panelId) : null;
+    const base: Placement = {
+      id: newId('place'),
+      panelId: panel ? panel.id : null,
+      assetId,
+      width: info.width,
+      height: info.height,
+      x: 0,
+      y: 0,
+      scale: 1,
+      rotation: 0,
+      flipX: false,
+      opacity: 1,
+      source,
+    };
+    if (panel) {
+      // A character dropped into a panel is fitted to the panel's height and stood on its floor, centred horizontally —
+      // the composition a manga artist wants for a standing figure. They can scale up to crop deliberately.
+      const content = panelContentPolygon(panel, p);
+      const b = polygonBounds(content);
+      const c = polygonCentroid(content);
+      const fit = Math.min((b.x1 - b.x0) / info.width, (b.y1 - b.y0) / info.height);
+      base.scale = fit;
+      base.x = c.x;
+      base.y = b.y1 - (info.height * fit) / 2;
+    } else {
+      const s = pagePixelSize(p);
+      base.x = s.width / 2;
+      base.y = s.height / 2;
+      base.scale = Math.min(s.width / info.width, s.height / info.height) * 0.6;
+    }
+    if (this.commitPage((pg) => addPlacementOp(pg, base), 'Place image')) {
+      this.selectPageItem({ kind: 'placement', id: base.id });
+      void this.refreshPageImages();
+    }
+  }
+
+  /** Place an accepted result (or any result) on the page, keeping the link back to its profile and pose. */
+  placeResult(generationId: ID, panelId: ID | null): void {
+    const c = this.needChar();
+    const g = c.generations.find((x) => x.id === generationId);
+    if (!g) return;
+    const saved = c.studio.poses.find((p) => p.id === g.provenance.poseId);
+    const source: PlacementSource = {
+      kind: 'result',
+      generationId: g.id,
+      poseId: g.provenance.poseId,
+      poseName: g.provenance.poseName ?? saved?.name ?? null,
+      pose: structuredClone(g.provenance.pose),
+      camera: structuredClone(g.provenance.camera),
+      capturedAt: g.createdAt,
+    };
+    this.placeImage(g.outputAssetId, panelId, source);
+  }
+
+  /** Place the 2D canvas as it currently looks (its layers composited) onto the page. */
+  async placeCanvas(panelId: ID | null): Promise<void> {
+    await this.run('Placing the 2D canvas…', async () => {
+      await this.refreshBitmaps();
+      const d = this.need();
+      const r = renderExportCanvas(d, this.bitmaps, 1);
+      const bytes = await canvasToPngBytes(r.canvas);
+      const asset: AssetData = { id: newId('asset'), kind: 'generated', mime: 'image/png', width: r.width, height: r.height, bytes };
+      this.addAsset(asset);
+      this.placeImage(asset.id, panelId, { kind: 'canvas', generationId: null, poseId: null, poseName: null, pose: null, camera: null, capturedAt: Date.now() });
+    });
+  }
+
+  updatePlacement(id: ID, patch: Partial<Omit<Placement, 'id'>>): void {
+    this.commitPage((p) => updatePlacementOp(p, id, patch), 'Edit placement', `place:${id}`);
+  }
+
+  deletePlacement(id: ID): void {
+    if (this.commitPage((p) => deletePlacementOp(p, id), 'Delete placement') && this.ui.page.selection?.id === id) this.selectPageItem(null);
+  }
+
+  movePlacement(id: ID, dir: 'up' | 'down' | 'top' | 'bottom'): void {
+    this.commitPage((p) => movePlacementOp(p, id, dir), 'Reorder placement');
+  }
+
+  /** Point an existing placement at a newer result, keeping its position and scale — this is how re-posing updates a panel. */
+  relinkPlacement(placementId: ID, generationId: ID): void {
+    const c = this.needChar();
+    const g = c.generations.find((x) => x.id === generationId);
+    const info = g && this.assets.get(g.outputAssetId);
+    if (!g || !info) return;
+    const source: PlacementSource = {
+      kind: 'result',
+      generationId: g.id,
+      poseId: g.provenance.poseId,
+      poseName: g.provenance.poseName,
+      pose: structuredClone(g.provenance.pose),
+      camera: structuredClone(g.provenance.camera),
+      capturedAt: g.createdAt,
+    };
+    if (this.commitPage((p) => relinkPlacementOp(p, placementId, g.outputAssetId, info.width, info.height, source), 'Update panel image')) {
+      this.toast('ok', 'The panel now shows the newer result. Its position and size are unchanged.');
+      void this.refreshPageImages();
+    }
+  }
+
+  addBubble(kind: BubbleKind = 'speech'): void {
+    const p = this.needPage();
+    const s = pagePixelSize(p);
+    const n = p.bubbles.length;
+    const bubble: Bubble = {
+      id: newId('bubble'),
+      kind,
+      text: kind === 'caption' ? 'Caption' : 'Say something…',
+      x: s.width * (0.3 + (n % 3) * 0.2),
+      y: s.height * (0.12 + Math.floor(n / 3) * 0.1),
+      width: kind === 'caption' ? s.width * 0.3 : s.width * 0.22,
+      height: kind === 'caption' ? s.height * 0.07 : s.height * 0.1,
+      tail: kind === 'caption' ? null : 90,
+      fontSize: Math.max(8, Math.round(s.width * 0.022)),
+    };
+    if (this.commitPage((pg) => addBubbleOp(pg, bubble), 'Add bubble')) this.selectPageItem({ kind: 'bubble', id: bubble.id });
+  }
+
+  updateBubble(id: ID, patch: Partial<Omit<Bubble, 'id'>>): void {
+    this.commitPage((p) => updateBubbleOp(p, id, patch), 'Edit bubble', `bubble:${id}`);
+  }
+
+  deleteBubble(id: ID): void {
+    if (this.commitPage((p) => deleteBubbleOp(p, id), 'Delete bubble') && this.ui.page.selection?.id === id) this.selectPageItem(null);
+  }
+
+  /** Decode any page images that are not ready yet, then re-render. */
+  async refreshPageImages(): Promise<void> {
+    const p = this.page;
+    if (!p) return;
+    const changed = await this.pageImages.ensure(pageAssetIds(p), this.assets);
+    if (changed) this.setUi({ page: { ...this.ui.page, imageRev: this.ui.page.imageRev + 1 } });
+  }
+
+  /** The decoded image for a placement, or null while it is still loading. */
+  pageImage(assetId: ID): HTMLCanvasElement | null {
+    return this.pageImages.get(assetId);
+  }
+
+  /** Render the page at print resolution (its own DPI, plus bleed). */
+  renderPageCanvas(opts: { scale?: number; paper?: boolean; borders?: boolean; bubbles?: boolean; bleed?: boolean } = {}): HTMLCanvasElement | null {
+    const p = this.page;
+    if (!p) return null;
+    return renderPage(p, {
+      scale: opts.scale ?? 1,
+      paper: opts.paper,
+      borders: opts.borders,
+      bubbles: opts.bubbles,
+      bleed: opts.bleed,
+      image: (id) => this.pageImages.get(id),
+    }).canvas;
+  }
+
+  async exportPagePng(): Promise<{ blob: Blob; width: number; height: number; dpi: number } | undefined> {
+    return this.run('Rendering the page…', async () => {
+      await this.refreshPageImages();
+      const p = this.needPage();
+      const size = pageExportSize(p);
+      if (size.width * size.height > 100_000_000) throw new Error(`The page would be ${size.width}×${size.height}px, which is too large to export. Lower the DPI.`);
+      const canvas = this.renderPageCanvas({ scale: 1 });
+      if (!canvas) throw new Error('There is no page to export.');
+      const blob = await canvasToBlob(canvas);
+      return { blob, width: canvas.width, height: canvas.height, dpi: p.dpi };
+    });
   }
 
   // ---------- export ----------
