@@ -336,14 +336,15 @@ describe('resizing the page', () => {
 
 describe('schema v4 migration (additive only)', () => {
   it('is the current version', () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(4);
+    expect(CURRENT_SCHEMA_VERSION).toBe(5);
   });
 
   it('adds a page to a v3 project and changes nothing else', () => {
     const v3 = { ...validProject(), schemaVersion: 3 } as Record<string, unknown>;
     delete v3.page;
     const before = structuredClone(v3);
-    const { data, migratedFrom } = migrateProjectData(v3);
+    // target 4 explicitly: this test is about the v3 -> v4 page step, not about whatever version is current
+    const { data, migratedFrom } = migrateProjectData(v3, MIGRATIONS, 4);
     expect(migratedFrom).toBe(3);
     expect(data.schemaVersion).toBe(4);
     expect(data.page).toBeDefined();

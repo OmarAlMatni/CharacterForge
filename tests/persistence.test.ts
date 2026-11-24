@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createProject } from '../src/core/project.ts';
 import { makeRasterLayer } from '../src/core/layers.ts';
+import { CURRENT_SCHEMA_VERSION } from '../src/core/migrations.ts';
 import { CharacterForgeDB } from '../src/storage/db.ts';
 import { deleteProject, duplicateProject, listMigrationBackups, listProjects, loadProject, restoreMigrationBackup, saveProject } from '../src/storage/projectService.ts';
 import type { AssetData } from '../src/storage/projectService.ts';
@@ -100,7 +101,7 @@ describe('migration safety', () => {
     const { id, v2 } = await storedV2();
     const { project, migratedFrom } = await loadProject(db, id);
     expect(migratedFrom).toBe(2);
-    expect(project.schemaVersion).toBe(4);
+    expect(project.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     const rows = await db.backups.toArray();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ projectId: id, fromVersion: 2 });
@@ -112,7 +113,7 @@ describe('migration safety', () => {
     const { id, v2 } = await storedV2();
     const first = await loadProject(db, id);
     await saveProject(db, { ...first.project, updatedAt: 500 });
-    expect((await db.projects.get(id))!.data.schemaVersion).toBe(4);
+    expect((await db.projects.get(id))!.data.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     const again = await loadProject(db, id);
     expect(again.migratedFrom).toBeNull();
     expect((await db.backups.get(`${id}@v2`))!.data).toEqual(v2);

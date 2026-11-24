@@ -269,8 +269,20 @@ function validateProjected(v: unknown, assetIds: Set<string>, where: string): st
 function validateArtwork(a: unknown, assetIds: Set<string>, where: string): string[] {
   if (!isRec(a)) return [`${where}: must be an object.`];
   const errors = [...validateProjected(a.front, assetIds, `${where}.front`), ...validateProjected(a.back, assetIds, `${where}.back`)];
+  // `views` is additive (schema v5): a v3 project has none, and an absent array is treated as empty rather than invalid.
+  if (a.views !== undefined) {
+    if (!Array.isArray(a.views)) errors.push(`${where}.views: must be an array.`);
+    else {
+      if (a.views.length > 4) errors.push(`${where}.views: at most 4 views.`);
+      a.views.forEach((v: unknown, i: number) => {
+        errors.push(...validateProjected(v, assetIds, `${where}.views[${i}]`));
+        if (!isRec(v) || !isNum(v.angle) || v.angle < 0 || v.angle >= 360) errors.push(`${where}.views[${i}].angle: must be a number from 0 to 360.`);
+      });
+    }
+  }
   if (a.bakedPose !== null) errors.push(...validatePose(a.bakedPose, `${where}.bakedPose`));
-  if ((a.front !== null || a.back !== null) && a.bakedPose === null) errors.push(`${where}.bakedPose: required when artwork is projected.`);
+  const hasAny = a.front !== null || a.back !== null || (Array.isArray(a.views) && a.views.length > 0);
+  if (hasAny && a.bakedPose === null) errors.push(`${where}.bakedPose: required when artwork is projected.`);
   if (!isBool(a.show)) errors.push(`${where}.show: must be true or false.`);
   if (!isStr(a.fill) || !HEX.test(a.fill)) errors.push(`${where}.fill: must be a #rrggbb colour.`);
   if (!isNum(a.shading) || a.shading < 0 || a.shading > 1) errors.push(`${where}.shading: must be a number from 0 to 1.`);

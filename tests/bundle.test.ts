@@ -1,6 +1,6 @@
 import { strToU8, zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
-import { ProjectFormatError } from '../src/core/migrations.ts';
+import { CURRENT_SCHEMA_VERSION, ProjectFormatError } from '../src/core/migrations.ts';
 import { BUNDLE_FORMAT, BUNDLE_LIMITS, exportBundle, importBundle } from '../src/storage/bundle.ts';
 import type { AssetData } from '../src/storage/projectService.ts';
 import { validProject } from './helpers.ts';
@@ -227,7 +227,7 @@ describe('hostile bundles', () => {
     files['project.json'] = strToU8(JSON.stringify({ ...project, schemaVersion: 2, character: { ...project.character, studio: studioV2 } }));
     const back = importBundle(zipSync(files));
     expect(back.migratedFrom).toBe(2);
-    expect(back.project.schemaVersion).toBe(4);
+    expect(back.project.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     for (const [id, a] of assets) expect([...back.assets.get(id)!.bytes]).toEqual([...a.bytes]);
   });
   it('migrations do not mutate the data they are given', async () => {
@@ -241,7 +241,7 @@ describe('hostile bundles', () => {
     const deepFreeze = (o: unknown): void => { if (o && typeof o === 'object') { Object.freeze(o); Object.values(o).forEach(deepFreeze); } };
     deepFreeze(v2);
     const out = migrateProjectData(v2);
-    expect(out.data.schemaVersion).toBe(4);
+    expect(out.data.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(v2).toEqual(frozen);
   });
 });

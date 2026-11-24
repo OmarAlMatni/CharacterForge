@@ -2,7 +2,7 @@ import { emptyArtwork, emptyCharacter } from './character.ts';
 import { emptyPage } from './page.ts';
 import { DEFAULT_SHAPE } from '../pose/bodyShape.ts';
 
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 export class ProjectFormatError extends Error {
   readonly details: string[];
@@ -27,6 +27,9 @@ export type Migration = (data: Record<string, unknown>) => Record<string, unknow
  *  v3 -> v4: adds `page` (the manga page: panel frames, placed images, lettering). It is a NEW top-level field only — no
  *            existing table, the pose engine or the character profile is touched, so a v3 project opens unchanged and simply
  *            has an empty page until the artist lays one out.
+ *  v4 -> v5: the projection became multi-view. `artwork.views` is added, seeded from the existing front/back slots at 0° and
+ *            180°, so a v4 project renders exactly as it did until the artist adds a side or three-quarter drawing. Nothing
+ *            else changes: the pose engine, the data model's other fields and every stored result are untouched.
  */
 export const MIGRATIONS: Record<number, Migration> = {
   1: (d) => {
@@ -53,6 +56,28 @@ export const MIGRATIONS: Record<number, Migration> = {
     // Additive only: a new top-level `page`. Nothing that already exists is read or rewritten.
     if (d.page !== undefined) return { ...d, schemaVersion: 4 };
     return { ...d, schemaVersion: 4, page: emptyPage() };
+  },
+  4: (d) => {
+    // Additive only: `artwork.views`, seeded from the v3/v4 front/back slots so the render is unchanged until a view is added.
+    const c = d.character;
+    if (typeof c !== 'object' || c === null || Array.isArray(c)) return { ...d, schemaVersion: 5 }; // left for validation to report
+    const char = c as Record<string, unknown>;
+    const st = char.studio;
+    if (typeof st !== 'object' || st === null || Array.isArray(st)) return { ...d, schemaVersion: 5 };
+    const studio = { ...(st as Record<string, unknown>) };
+    const art = studio.artwork;
+    if (typeof art === 'object' && art !== null && !Array.isArray(art)) {
+      const a = art as Record<string, unknown>;
+      if (!Array.isArray(a.views)) {
+        const views: unknown[] = [];
+        if (a.front) views.push({ ...(a.front as Record<string, unknown>), angle: 0 });
+        if (a.back) views.push({ ...(a.back as Record<string, unknown>), angle: 180 });
+        studio.artwork = { ...a, views };
+      }
+    } else {
+      studio.artwork = emptyArtwork();
+    }
+    return { ...d, schemaVersion: 5, character: { ...char, studio } };
   },
 };
 

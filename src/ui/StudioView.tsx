@@ -1,6 +1,6 @@
 import { zipSync } from 'fflate';
 import { useEffect, useRef, useState } from 'react';
-import { GUIDE_KINDS } from '../core/character.ts';
+import { GUIDE_KINDS, artworkViews } from '../core/character.ts';
 import type { GuideKind } from '../core/character.ts';
 import { store } from '../app/store.ts';
 import { useApp } from '../app/useApp.ts';
@@ -79,7 +79,7 @@ function StudioCanvas() {
   const art = c.studio.artwork;
   useEffect(() => {
     void store.ensureArtwork();
-  }, [c.originalAssetId, art.front?.assetId, art.back?.assetId, art.overlay.show]);
+  }, [c.originalAssetId, artworkViews(art).map((v) => `${v.assetId}@${v.angle}`).join(','), art.overlay.show]);
 
   return (
     <div className="studio-center">
@@ -229,11 +229,16 @@ function BodySection() {
 
 function ArtworkSection() {
   const { character: c, ui } = useApp();
+  const [addViewAsset, setAddViewAsset] = useState('');
+  const [addViewAngle, setAddViewAngle] = useState(90);
   if (!c) return null;
   const a = c.studio.artwork;
   const fit = ui.studio.fit;
   const hasOriginal = !!c.originalAssetId;
   const stale = !!a.front && a.front.assetId !== c.originalAssetId;
+  const viewCount = artworkViews(a).length;
+  // how much of the body each drawing paints, so a mis-angled view is visible before rendering
+  const coverage = viewCount > 1 ? store.viewCoverageReport(c) : null;
   return (
     <Section title="Match to artwork" hint="Line the model up with your drawing, then project the drawing onto it. The model keeps the drawing as you pose it for your panels.">
       {!hasOriginal ? (
@@ -302,20 +307,65 @@ function ArtworkSection() {
                 <em>{Math.round(a.shading * 100)}%</em>
               </label>
               {c.references.length > 0 && (
-                <label className="slider-row">
-                  <span>Back view</span>
-                  <select aria-label="Back-view image" value={a.back?.assetId ?? ''} onChange={(e) => void store.setBackView(e.target.value || null)}>
-                    <option value="">None (fill colour)</option>
-                    {c.references.map((r) => (
-                      <option key={r.id} value={r.assetId}>
-                        {r.label || r.fileName}
-                      </option>
+                <div className="stack">
+                  <p className="muted">
+                    <b>Views.</b> The front drawing is the original artwork. Add a side or back drawing and the model's flank is painted by
+                    that drawing instead of being stretched from the front. Angles are degrees around the character: 0 = front, 90 = their
+                    left side, 180 = back.
+                  </p>
+                  <ul className="view-list" data-testid="view-list">
+                    {artworkViews(a).map((v, i) => (
+                      <li key={`${v.assetId}-${v.angle}`} className="view-row">
+                        <span className="view-angle">{Math.round(v.angle)}°</span>
+                        <span className="view-name">
+                          {v.angle === 0 ? 'Front (original artwork)' : c.references.find((r) => r.assetId === v.assetId)?.label || 'Reference'}
+                        </span>
+                        {coverage && coverage[i] !== undefined && (
+                          <span className="view-share" title="Share of the body's surface this drawing paints">
+                            {Math.round(coverage[i]! * 100)}% of body
+                          </span>
+                        )}
+                        {v.angle !== 0 && (
+                          <button className="danger small" onClick={() => void store.removeView(v.angle)} title="Remove this view">
+                            Remove
+                          </button>
+                        )}
+                      </li>
                     ))}
-                  </select>
-                </label>
+                  </ul>
+                  <div className="row wrap">
+                    <select aria-label="Add view from reference" value={addViewAsset} onChange={(e) => setAddViewAsset(e.target.value)}>
+                      <option value="">Choose a reference…</option>
+                      {c.references.map((r) => (
+                        <option key={r.id} value={r.assetId}>
+                          {r.label || r.fileName}
+                        </option>
+                      ))}
+                    </select>
+                    <select aria-label="View angle" value={String(addViewAngle)} onChange={(e) => setAddViewAngle(Number(e.target.value))}>
+                      <option value="45">45° three-quarter</option>
+                      <option value="90">90° side</option>
+                      <option value="135">135° rear three-quarter</option>
+                      <option value="180">180° back</option>
+                    </select>
+                    <button
+                      disabled={!addViewAsset}
+                      onClick={() => {
+                        if (!addViewAsset) return;
+                        void store.addView(addViewAsset, addViewAngle);
+                        setAddViewAsset('');
+                      }}
+                      data-testid="add-view"
+                    >
+                      Add view
+                    </button>
+                  </div>
+                </div>
               )}
               <p className="muted">
-                The drawing covers what faces the camera in the projected pose. Sides, and the back without a back view, use the fill colour. Project again after changing the body.
+                {viewCount > 1
+                  ? `${viewCount} views are blended by how much each surface faces each one, so the flank is painted by your side drawing. Project again after changing the body.`
+                  : 'One view: the drawing covers what faces the camera in the projected pose, and the sides are extended from its outline. Add a side or back view to stop the sides being invented. Project again after changing the body.'}
               </p>
             </>
           )}
@@ -479,7 +529,7 @@ function GuideInspector() {
       const files: Record<string, Uint8Array> = {};
       for (const g of GUIDE_KINDS) {
         // the character render needs projected artwork; leave it out of the pack when there is none
-        if (g.id === 'textured' && !c.studio.artwork.front && !c.studio.artwork.back) continue;
+        if (g.id === 'textured' && artworkViews(c.studio.artwork).length === 0) continue;
         const f = await store.renderGuideFile(g.id, GUIDE_DEFAULT_TRANSPARENT[g.id]);
         files[`${g.id}.png`] = f.bytes;
       }

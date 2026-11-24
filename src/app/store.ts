@@ -2,9 +2,9 @@ import {
   addGeneration, addReference, applyStudioPose, deleteGeneration, deleteStudioPose, overwriteStudioPose, removeReference, renameStudioPose, saveStudioPose, setGenerationNote,
   setGenerationStatus, setOriginal, updateAppearance, updateReference, updateStudio,
 } from '../core/character.ts';
-import type { Appearance, CharacterState, GenerationRecord, GuideKind, ReferenceImage } from '../core/character.ts';
+import type { Appearance, CharacterState, GenerationRecord, GuideKind, ProjectedView, ReferenceImage } from '../core/character.ts';
 import { detectImageKind, imageMime } from '../core/files.ts';
-import { GUIDE_KINDS } from '../core/character.ts';
+import { GUIDE_KINDS, artworkViews, withViews } from '../core/character.ts';
 import { makeRasterLayer } from '../core/layers.ts';
 import { assertGenuineResult } from '../generation/guard.ts';
 import { buildProvenance, importedProvider, makeRecord } from '../generation/provenance.ts';
@@ -17,7 +17,7 @@ import { GUIDE_DEFAULT_TRANSPARENT, disposeGuideRenderer, renderGuideCanvas, ren
 import type { ArtworkFit, BodyShape, CameraState, JointId, Pose3D, Proportions } from '../pose/index.ts';
 import {
   BODY_PRESETS, CAMERA_LIMITS, DEFAULT_SHAPE, POSE_PRESETS, PROPORTION_PRESETS, VIEW_PRESETS, applyPreset, buildRestSkeleton, clampCamera, clampEuler, clampProportions, frameCamera, framingPoints, projectPoint,
-  alignFit, boundsXY, buildCharacterMesh, clampShape, computePoseGuide, fitBodyToArtwork, getRot, mirrorPose, normalizePose, posedPositions, posesEqual, restPose, restoreStandingHeight, snapToGround,
+  alignFit, alignFitExtent, boundsXY, buildCharacterMesh, clampShape, computePoseGuide, distinctViews, fitBodyToArtwork, forwardKinematics, getRot, mirrorPose, normalizeAngle, normalizePose, posedPositions, posesEqual, restPose, restoreStandingHeight, skinBody, snapToGround, viewCoverage, viewExtent, viewWeights,
 } from '../pose/index.ts';
 import { ArtworkCache } from './artwork.ts';
 import { loadBodyModel } from '../render/loadBodyModel.ts';
@@ -1133,7 +1133,7 @@ export class AppStore {
   async ensureArtwork(): Promise<void> {
     const c = this.character;
     if (!c) return;
-    const ids = [c.originalAssetId, c.studio.artwork.front?.assetId, c.studio.artwork.back?.assetId].filter((x): x is ID => !!x);
+    const ids = [c.originalAssetId, ...artworkViews(c.studio.artwork).map((v) => v.assetId)].filter((x): x is ID => !!x);
     let added = false;
     for (const id of ids) {
       if (this.artCache.get(id)) continue;
@@ -1148,17 +1148,35 @@ export class AppStore {
     }
     if (added) this.setUi({ studio: { ...this.ui.studio, artRev: this.ui.studio.artRev + 1 } });
   }
+  /**
+   * How much of the body each view paints, as a fraction (0..1, summing to 1), in the same order as `artworkViews`.
+   * This is what the UI shows the artist: a side drawing that reports 2% is mis-angled or the body is too thin, and the
+   * artist can see that before rendering. Returns null when nothing is projected.
+   */
+  viewCoverageReport(c: CharacterState = this.needChar()): number[] | null {
+    const views = artworkViews(c.studio.artwork);
+    if (views.length === 0) return null;
+    const rest = buildRestSkeleton(c.studio.proportions);
+    const mesh = buildCharacterMesh(rest, c.studio.shape, 'normal');
+    const pos = new Float32Array(mesh.vertexCount * 3);
+    const nor = new Float32Array(mesh.vertexCount * 3);
+    skinBody(mesh, forwardKinematics(rest, c.studio.pose), pos, nor);
+    const w = viewWeights(nor, mesh.vertexCount, views.map((v) => v.angle));
+    return viewCoverage(w, mesh.vertexCount, views.length);
+  }
+
   /** What the viewport and the "character render" guide need to show the artwork on the body (null when none is projected). */
   bodyArtwork(c: CharacterState = this.needChar()): BodyArtwork | null {
     const a = c.studio.artwork;
-    const img = (p: typeof a.front) => {
-      const hit = p ? this.artCache.get(p.assetId) : null;
-      return p && hit ? { image: hit.projection as TexImageSource, fit: p.fit, width: p.width, height: p.height, mask: hit.mask, maskScale: hit.maskScale } : null;
-    };
-    const front = img(a.front);
-    const back = img(a.back);
-    if (!front && !back) return null;
-    return { front, back, bakedPose: a.bakedPose, show: a.show, fill: a.fill, shading: a.shading };
+    const views = artworkViews(a)
+      .map((v) => {
+        const hit = this.artCache.get(v.assetId);
+        return hit ? { image: hit.projection as TexImageSource, fit: v.fit, width: v.width, height: v.height, mask: hit.mask, maskScale: hit.maskScale, angle: v.angle } : null;
+      })
+      .filter((v): v is NonNullable<typeof v> => !!v)
+      .sort((p, q) => p.angle - q.angle);
+    if (views.length === 0) return null;
+    return { views, bakedPose: a.bakedPose, show: a.show, fill: a.fill, shading: a.shading };
   }
   /** The translucent drawing laid over the viewport to line the body up with it. */
   overlayState(c: CharacterState = this.needChar()) {
@@ -1187,9 +1205,12 @@ export class AppStore {
     this.commitChar((x) => updateStudio(x, { camera: clampCamera({ ...cam, azimuth: 0, elevation: 0 }) }), 'Match view');
   }
   /**
-   * Project the artwork onto the model from the front, in the CURRENT pose (which should resemble the drawing, usually a standing
-   * or A-pose). The projection is stored on the body, so the drawing follows every later pose. `backAssetId` optionally adds a
-   * back view (a reference image of the same character from behind).
+   * Project the artwork onto the model in the CURRENT pose (which should resemble the drawings, usually a standing or
+   * A-pose). Every supplied view is projected along its own axis and fitted to the body's extent along that axis, so a
+   * side drawing is fitted to the body's depth rather than to its width. The projection is stored on the body, so the
+   * drawings follow every later pose.
+   *
+   * `backAssetId` is the v3 entry point (a single back view); it is folded into the view set at 180°.
    */
   async projectArtwork(backAssetId: ID | null = null): Promise<void> {
     const c0 = this.needChar();
@@ -1202,18 +1223,38 @@ export class AppStore {
       if (!front?.box) throw new Error('No figure was found in the artwork. Use an image with a transparent or plain background.');
       const rest = buildRestSkeleton(c.studio.proportions);
       const mesh = buildCharacterMesh(rest, c.studio.shape, 'normal');
-      const bounds = boundsXY(posedPositions(mesh, rest, c.studio.pose), mesh.vertexCount);
-      let back: { assetId: ID; width: number; height: number; fit: ArtworkFit } | null = null;
-      if (backAssetId) {
-        const bi = this.artCache.get(backAssetId);
-        if (!bi?.box) throw new Error('No figure was found in the back-view image.');
-        back = { assetId: backAssetId, width: bi.width, height: bi.height, fit: alignFit(bounds, bi.box, true) };
+      const pos = posedPositions(mesh, rest, c.studio.pose);
+      const bounds = boundsXY(pos, mesh.vertexCount);
+      // the view set: whatever the artist added, plus the v3 back slot if it was passed in
+      const existing = artworkViews(c.studio.artwork).filter((v) => v.angle !== 0);
+      const wanted = backAssetId ? [...existing.filter((v) => v.angle !== 180), { assetId: backAssetId, angle: 180 }] : existing;
+      const views: ProjectedView[] = [];
+      // the front view is always the original artwork, at 0°
+      views.push({ assetId: c.originalAssetId!, width: front.width, height: front.height, fit: alignFit(bounds, front.box), angle: 0 });
+      for (const w of distinctViews(wanted)) {
+        // a view may be a reference image, which ensureArtwork does not decode: decode it here
+        let img = this.artCache.get(w.assetId);
+        if (!img) {
+          const asset = this.assets.get(w.assetId);
+          if (!asset) continue;
+          try {
+            img = await this.artCache.load(w.assetId, asset.bytes, asset.mime);
+          } catch {
+            continue;
+          }
+        }
+        if (!img?.box) continue; // a view whose image has no figure is skipped rather than failing the whole projection
+        // fit this view's drawing to the body's extent along ITS axis (a side view's horizontal axis is the depth)
+        const ext = viewExtent(pos, mesh.vertexCount, w.angle);
+        views.push({ assetId: w.assetId, width: img.width, height: img.height, fit: alignFitExtent(ext.min, ext.max, bounds.minY, bounds.maxY, img.box), angle: w.angle });
       }
-      const projected = { assetId: c.originalAssetId!, width: front.width, height: front.height, fit: alignFit(bounds, front.box) };
       this.commitChar((x) => updateStudio(x, {
-        artwork: { ...x.studio.artwork, front: projected, back, bakedPose: structuredClone(x.studio.pose), show: true, fill: x.studio.artwork.front ? x.studio.artwork.fill : front.avgColor },
+        artwork: withViews({ ...x.studio.artwork, bakedPose: structuredClone(x.studio.pose), show: true, fill: x.studio.artwork.front ? x.studio.artwork.fill : front.avgColor }, views),
       }), 'Project artwork onto model');
-      this.toast('ok', 'Artwork projected onto the model. Pose the model: the drawing follows the body. Surfaces the drawing does not show use the fill colour.');
+      const n = views.length;
+      this.toast('ok', n > 1
+        ? `Artwork projected from ${n} views. Pose the model: the drawings follow the body.`
+        : 'Artwork projected onto the model. Pose the model: the drawing follows the body. Add a side or back view to stop the sides being invented.');
     });
   }
   async setBackView(assetId: ID | null): Promise<void> {
@@ -1221,8 +1262,41 @@ export class AppStore {
     if (!a.front) return void this.toast('info', 'Project the front artwork first.');
     await this.projectArtwork(assetId);
   }
+  /** Add (or replace) a drawing for a view at `angle` degrees, then re-project. */
+  async addView(assetId: ID, angle: number): Promise<void> {
+    const a = this.needChar().studio.artwork;
+    if (!a.front) return void this.toast('info', 'Project the front artwork first.');
+    await this.ensureArtwork();
+    // a reference image is not decoded by ensureArtwork (that only loads the original and the current views), so decode it
+    // here before reading its figure box
+    let img = this.artCache.get(assetId);
+    if (!img) {
+      const asset = this.assets.get(assetId);
+      if (!asset) return void this.toast('error', 'That image is no longer in this project.');
+      try {
+        img = await this.artCache.load(assetId, asset.bytes, asset.mime);
+      } catch {
+        return void this.toast('error', 'That image could not be decoded.');
+      }
+    }
+    if (!img?.box) return void this.toast('error', 'No figure was found in that image. Use a drawing with a transparent or plain background.');
+    const kept = artworkViews(a).filter((v) => Math.abs(normalizeAngle(v.angle) - normalizeAngle(angle)) >= 12);
+    // the fit is a placeholder: projectArtwork recomputes it against the body's extent along this view's axis
+    const placeholder: ProjectedView = { assetId, width: img.width, height: img.height, fit: { ppm: 1, ox: 0, oy: 0 }, angle: normalizeAngle(angle) };
+    const next = distinctViews([...kept, placeholder]);
+    this.commitChar((c) => updateStudio(c, { artwork: withViews(c.studio.artwork, next.map((v) => ({ ...v, angle: normalizeAngle(v.angle) }))) }), 'Add artwork view');
+    await this.projectArtwork(null);
+  }
+  /** Remove the drawing for a view at `angle` degrees, then re-project. The 0° view cannot be removed. */
+  async removeView(angle: number): Promise<void> {
+    const a = this.needChar().studio.artwork;
+    if (normalizeAngle(angle) === 0) return void this.toast('info', 'The front view is the original artwork and cannot be removed.');
+    const kept = artworkViews(a).filter((v) => Math.abs(normalizeAngle(v.angle) - normalizeAngle(angle)) >= 1e-6);
+    this.commitChar((c) => updateStudio(c, { artwork: withViews(c.studio.artwork, kept) }), 'Remove artwork view');
+    await this.projectArtwork(null);
+  }
   clearProjection(): void {
-    this.commitChar((c) => updateStudio(c, { artwork: { ...c.studio.artwork, front: null, back: null, bakedPose: null } }), 'Remove projected artwork');
+    this.commitChar((c) => updateStudio(c, { artwork: { ...c.studio.artwork, front: null, back: null, views: [], bakedPose: null } }), 'Remove projected artwork');
   }
   /**
    * Fit proportions and shape to the drawing's silhouette, assuming the current pose matches the drawing (front-facing).
@@ -1311,7 +1385,7 @@ export class AppStore {
     const c = this.needChar();
     if (kind === 'textured') {
       const a = this.bodyArtwork(c);
-      if (!a || !a.bakedPose || !(a.front || a.back)) throw new Error('Project the artwork onto the model first (Pose studio → Match to artwork), then render the character render.');
+      if (!a || !a.bakedPose || a.views.length === 0) throw new Error('Project the artwork onto the model first (Pose studio → Match to artwork), then render the character render.');
     }
     return {
       kind, rest: buildRestSkeleton(c.studio.proportions), shape: c.studio.shape, artwork: kind === 'textured' ? this.bodyArtwork(c) : null,

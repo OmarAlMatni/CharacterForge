@@ -44,11 +44,20 @@ export function boundsXY(positions: Float32Array | Float64Array, count = positio
  * the same height, centred horizontally. `mirror` is for a back-view image (x is flipped).
  */
 export function alignFit(model: Bounds2, art: Box, mirror = false): ArtworkFit {
-  const h = Math.max(1e-6, model.maxY - model.minY);
+  return alignFitExtent(model.minX, model.maxX, model.minY, model.maxY, art, mirror);
+}
+
+/**
+ * The general form of `alignFit`: the model's horizontal extent is given explicitly, so a view that is not the front
+ * (a side view, whose horizontal axis is the body's DEPTH rather than its width) can be fitted the same way.
+ * `hMin`/`hMax` are the model's extent along that view's right axis; `yMin`/`yMax` its vertical extent.
+ */
+export function alignFitExtent(hMin: number, hMax: number, yMin: number, yMax: number, art: Box, mirror = false): ArtworkFit {
+  const h = Math.max(1e-6, yMax - yMin);
   const ppm = (art.y1 + 1 - art.y0) / h;
-  const cx = (model.minX + model.maxX) / 2;
+  const cx = (hMin + hMax) / 2;
   const artCx = (art.x0 + art.x1 + 1) / 2;
-  return { ppm, ox: artCx - (mirror ? -cx : cx) * ppm, oy: art.y1 + 1 + model.minY * ppm };
+  return { ppm, ox: artCx - (mirror ? -cx : cx) * ppm, oy: art.y1 + 1 + yMin * ppm };
 }
 
 /** Pixel position of every vertex under a fit (2 floats per vertex). */
@@ -60,6 +69,90 @@ export function projectXY(positions: Float32Array | Float64Array, count: number,
     out[i * 2 + 1] = fit.oy - y * fit.ppm;
   }
   return out;
+}
+
+// ---------------------------------------------------------------- multi-view projection
+
+/** The most views the renderer can blend at once (front, three-quarter, side, back). */
+export const MAX_VIEWS = 4;
+
+const DEG = Math.PI / 180;
+
+/**
+ * The horizontal axis of a view, in model space. `angle` is degrees around Y: 0 = front (looking along -Z at the
+ * character's front), +90 = the character's left side, 180 = back. At 0 this is (1, 0, 0), so a front view projects
+ * exactly as `projectXY` always did.
+ */
+export function viewRight(angle: number): { x: number; y: number; z: number } {
+  const a = angle * DEG;
+  return { x: Math.cos(a), y: 0, z: -Math.sin(a) };
+}
+
+/** The direction from the model toward the viewer of a view (the projection axis). At 0 this is +Z. */
+export function viewDirection(angle: number): { x: number; y: number; z: number } {
+  const a = angle * DEG;
+  return { x: Math.sin(a), y: 0, z: Math.cos(a) };
+}
+
+/** Horizontal model coordinate of a vertex under a view (its position along the view's right axis). */
+export function viewHorizontal(positions: Float32Array | Float64Array, count: number, angle: number): { min: number; max: number } {
+  const r = viewRight(angle);
+  let min = Infinity;
+  let max = -Infinity;
+  for (let i = 0; i < count; i++) {
+    const u = positions[i * 3]! * r.x + positions[i * 3 + 2]! * r.z;
+    if (u < min) min = u;
+    if (u > max) max = u;
+  }
+  return { min, max };
+}
+
+/**
+ * Pixel position of every vertex as seen from `angle`. Identical to `projectXY` at angle 0; for any other angle the
+ * horizontal coordinate is the vertex's position along that view's right axis, so a side view projects the body's depth.
+ */
+export function projectView(
+  positions: Float32Array | Float64Array,
+  count: number,
+  fit: ArtworkFit,
+  angle: number,
+  mirror = false,
+): Float32Array {
+  const r = viewRight(angle);
+  const out = new Float32Array(count * 2);
+  for (let i = 0; i < count; i++) {
+    const u = positions[i * 3]! * r.x + positions[i * 3 + 2]! * r.z;
+    const y = positions[i * 3 + 1]!;
+    out[i * 2] = fit.ox + (mirror ? -u : u) * fit.ppm;
+    out[i * 2 + 1] = fit.oy - y * fit.ppm;
+  }
+  return out;
+}
+
+/**
+ * How much a surface faces a view: `max(0, n · d)` raised to `power`, where `d` is the view's direction. 1 when the
+ * surface looks straight at that view's camera, 0 at and beyond its silhouette. This is the multi-view replacement for
+ * the single front/back `smoothstep` on the normal's Z.
+ */
+export function facingWeight(nx: number, ny: number, nz: number, angle: number, power = 1.5): number {
+  const d = viewDirection(angle);
+  const c = nx * d.x + ny * d.y + nz * d.z;
+  return c <= 0 ? 0 : Math.pow(c, power);
+}
+
+/** The view whose direction a normal points most nearly toward (used as the fallback when every weight is zero). */
+export function dominantView(nx: number, ny: number, nz: number, angles: number[]): number {
+  let best = 0;
+  let bestDot = -Infinity;
+  for (let i = 0; i < angles.length; i++) {
+    const d = viewDirection(angles[i]!);
+    const c = nx * d.x + ny * d.y + nz * d.z;
+    if (c > bestDot) {
+      bestDot = c;
+      best = i;
+    }
+  }
+  return best;
 }
 
 /** Texture coordinates (0..1, origin at the image's top-left) for the vertices under a fit. */

@@ -99,7 +99,7 @@ describe('migrations', () => {
   };
   it('current data needs no migration', () => {
     expect(migrateProjectData(validProject()).migratedFrom).toBeNull();
-    expect(CURRENT_SCHEMA_VERSION).toBe(4);
+    expect(CURRENT_SCHEMA_VERSION).toBe(5);
   });
   it('chains migrations in order', () => {
     const r = migrateProjectData(v1(), steps, 3);

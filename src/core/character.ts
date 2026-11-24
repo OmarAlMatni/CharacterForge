@@ -64,12 +64,27 @@ export interface ProjectedImage {
 }
 
 /**
+ * One drawing supplied for a view of the character (schema v5+). `angle` is degrees around Y: 0 = front, +90 = the
+ * character's left side, 180 = back. The renderer blends the views by how much each surface faces each one, so a side
+ * drawing paints the flank instead of the front drawing being stretched around it.
+ */
+export interface ProjectedView extends ProjectedImage {
+  angle: number;
+}
+
+/**
  * The character's artwork as it appears on the 3D body. The drawing is projected from the front in the pose the drawing shows
  * (`bakedPose`); the coordinates stay attached to the body, so the drawing follows it when it moves.
+ *
+ * `views` (schema v5+) is the multi-view set. `front`/`back` are kept as the v3 representation and stay in sync with the
+ * 0° and 180° entries of `views`, so a project written by an older build still opens and a project written here still
+ * opens in one.
  */
 export interface ArtworkProjection {
   front: ProjectedImage | null;
   back: ProjectedImage | null;
+  /** Multi-view drawings, at most `MAX_VIEWS`. Empty means "use front/back only" (a v3 project). */
+  views: ProjectedView[];
   /** Pose the body had when the artwork was aligned and projected. */
   bakedPose: Pose3D | null;
   /** Show the projected artwork on the model (otherwise the plain clay model). */
@@ -160,7 +175,31 @@ export const emptyAppearance = (): Appearance => ({ palette: [], hair: '', eyes:
 export const DEFAULT_FILL = '#c9ced8';
 
 export function emptyArtwork(): ArtworkProjection {
-  return { front: null, back: null, bakedPose: null, show: true, fill: DEFAULT_FILL, shading: 0.35, overlay: { show: false, opacity: 0.5 } };
+  return { front: null, back: null, views: [], bakedPose: null, show: true, fill: DEFAULT_FILL, shading: 0.35, overlay: { show: false, opacity: 0.5 } };
+}
+
+/**
+ * The views to render, derived from the stored state. A v3 project has only `front`/`back`; a v5 project has `views`.
+ * This is the single place that decides, so the renderer never has to know which schema wrote the project.
+ */
+export function artworkViews(a: ArtworkProjection): ProjectedView[] {
+  if (a.views.length > 0) return a.views;
+  const out: ProjectedView[] = [];
+  if (a.front) out.push({ ...a.front, angle: 0 });
+  if (a.back) out.push({ ...a.back, angle: 180 });
+  return out;
+}
+
+/**
+ * Write a multi-view set back into the v3-compatible `front`/`back` slots, so an older build (and the bundle format)
+ * still sees a usable projection. The 0° view becomes `front`, the 180° view becomes `back`.
+ */
+export function withViews(a: ArtworkProjection, views: ProjectedView[]): ArtworkProjection {
+  const at = (deg: number): ProjectedImage | null => {
+    const v = views.find((x) => Math.abs(((x.angle % 360) + 360) % 360 - deg) < 1e-6);
+    return v ? { assetId: v.assetId, width: v.width, height: v.height, fit: v.fit } : null;
+  };
+  return { ...a, views, front: at(0), back: at(180) };
 }
 
 export function emptyStudio(): StudioState {
@@ -286,6 +325,7 @@ export function characterAssetIds(c: CharacterState): Set<ID> {
   c.previousOriginals.forEach((p) => s.add(p.assetId));
   if (c.studio.artwork.front) s.add(c.studio.artwork.front.assetId);
   if (c.studio.artwork.back) s.add(c.studio.artwork.back.assetId);
+  c.studio.artwork.views.forEach((v) => s.add(v.assetId));
   c.references.forEach((r) => s.add(r.assetId));
   for (const g of c.generations) {
     s.add(g.outputAssetId);
