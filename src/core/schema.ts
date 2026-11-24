@@ -3,6 +3,7 @@ import { validateCamera, validateProportions } from '../pose/validate.ts';
 import { validatePose } from '../pose/pose.ts';
 import { CHARACTER_LIMITS } from './character.ts';
 import { ID_PATTERN } from './ids.ts';
+import { PAGE_LIMITS } from './page.ts';
 import { ASSET_KINDS } from './types.ts';
 import type { ProjectFile } from './types.ts';
 
@@ -155,6 +156,7 @@ export function validateProjectFile(data: unknown): ValidationResult {
   });
 
   validateCharacter(data.character, assetIds, errors);
+  validatePage(data.page, assetIds, errors);
 
   if (errors.length) return { ok: false, errors: errors.slice(0, 50) };
   return { ok: true, value: data as unknown as ProjectFile };
@@ -275,4 +277,90 @@ function validateArtwork(a: unknown, assetIds: Set<string>, where: string): stri
   const o = a.overlay;
   if (!isRec(o) || !isBool(o.show) || !isNum(o.opacity) || o.opacity < 0 || o.opacity > 1) errors.push(`${where}.overlay: show must be true/false and opacity a number from 0 to 1.`);
   return errors;
+}
+
+// ---------------------------------------------------------------- page (schema v4)
+
+const PANEL_SHAPES = ['rect', 'skewed', 'free'];
+const BUBBLE_KINDS = ['speech', 'thought', 'caption', 'shout'];
+const PLACEMENT_KINDS = ['result', 'canvas', 'imported'];
+
+function validatePage(v: unknown, assetIds: Set<string>, errors: string[]): void {
+  // Additive field: a project saved before v4 has no page, and that is valid (the migration adds one on load).
+  if (v === undefined) return;
+  if (!isRec(v)) return void errors.push('page: must be an object.');
+
+  const size = v.size;
+  if (!isRec(size) || !isNum(size.width) || !isNum(size.height)) errors.push('page.size: width/height must be numbers.');
+  else if (size.width < PAGE_LIMITS.minSideMm || size.height < PAGE_LIMITS.minSideMm || size.width > PAGE_LIMITS.maxSideMm || size.height > PAGE_LIMITS.maxSideMm)
+    errors.push(`page.size: each side must be between ${PAGE_LIMITS.minSideMm} and ${PAGE_LIMITS.maxSideMm} mm.`);
+
+  if (!isNum(v.dpi) || !Number.isInteger(v.dpi) || v.dpi < PAGE_LIMITS.minDpi || v.dpi > PAGE_LIMITS.maxDpi) errors.push(`page.dpi: must be a whole number from ${PAGE_LIMITS.minDpi} to ${PAGE_LIMITS.maxDpi}.`);
+  if (!isNum(v.bleed) || v.bleed < 0 || v.bleed > 20) errors.push('page.bleed: must be a number from 0 to 20 mm.');
+  if (!isNum(v.gutter) || v.gutter < 0 || v.gutter > 40) errors.push('page.gutter: must be a number from 0 to 40 mm.');
+  if (!isNum(v.borderWidth) || v.borderWidth < 0 || v.borderWidth > 10) errors.push('page.borderWidth: must be a number from 0 to 10 mm.');
+  if (!isStr(v.background) || !HEX.test(v.background)) errors.push('page.background: must be a #rrggbb colour.');
+  if (!isStr(v.borderColor) || !HEX.test(v.borderColor)) errors.push('page.borderColor: must be a #rrggbb colour.');
+
+  const panelIds = new Set<string>();
+  const panels = Array.isArray(v.panels) ? v.panels : (errors.push('page.panels: must be an array.'), []);
+  if (panels.length > PAGE_LIMITS.panels) errors.push(`page.panels: more than ${PAGE_LIMITS.panels}.`);
+  panels.forEach((p: unknown, i: number) => {
+    const w = `page.panels[${i}]`;
+    if (!isRec(p) || !isId(p.id)) return void errors.push(`${w}: invalid id.`);
+    if (panelIds.has(p.id)) errors.push(`${w}: duplicate id.`);
+    panelIds.add(p.id);
+    if (!isStr(p.name)) errors.push(`${w}.name: must be a string.`);
+    if (!isStr(p.shape) || !PANEL_SHAPES.includes(p.shape)) errors.push(`${w}.shape: must be rect, skewed or free.`);
+    if (!Array.isArray(p.points) || p.points.length < 3) errors.push(`${w}.points: must be at least 3 points.`);
+    else if (p.points.length > 64) errors.push(`${w}.points: more than 64 points.`);
+    else p.points.forEach((pt: unknown, j: number) => vec(pt) || errors.push(`${w}.points[${j}]: must be {x, y}.`));
+  });
+
+  const placementIds = new Set<string>();
+  const placements = Array.isArray(v.placements) ? v.placements : (errors.push('page.placements: must be an array.'), []);
+  if (placements.length > PAGE_LIMITS.placements) errors.push(`page.placements: more than ${PAGE_LIMITS.placements}.`);
+  placements.forEach((p: unknown, i: number) => {
+    const w = `page.placements[${i}]`;
+    if (!isRec(p) || !isId(p.id)) return void errors.push(`${w}: invalid id.`);
+    if (placementIds.has(p.id)) errors.push(`${w}: duplicate id.`);
+    placementIds.add(p.id);
+    if (p.panelId !== null && !(isStr(p.panelId) && panelIds.has(p.panelId))) errors.push(`${w}.panelId: must be null or an existing panel.`);
+    if (!isStr(p.assetId) || !assetIds.has(p.assetId)) errors.push(`${w}.assetId: unknown asset.`);
+    if (!isNum(p.width) || !isNum(p.height) || p.width < 1 || p.height < 1) errors.push(`${w}: width/height must be positive.`);
+    if (!isNum(p.x) || !isNum(p.y)) errors.push(`${w}: x/y must be numbers.`);
+    if (!isNum(p.scale) || p.scale <= 0) errors.push(`${w}.scale: must be a positive number.`);
+    if (!isNum(p.rotation)) errors.push(`${w}.rotation: must be a number.`);
+    if (!isBool(p.flipX)) errors.push(`${w}.flipX: must be true or false.`);
+    if (!isNum(p.opacity) || p.opacity < 0 || p.opacity > 1) errors.push(`${w}.opacity: must be between 0 and 1.`);
+    if (p.source !== null) {
+      const s = p.source;
+      if (!isRec(s)) errors.push(`${w}.source: must be an object or null.`);
+      else {
+        if (!isStr(s.kind) || !PLACEMENT_KINDS.includes(s.kind)) errors.push(`${w}.source.kind: must be result, canvas or imported.`);
+        if (!(s.generationId === null || isStr(s.generationId))) errors.push(`${w}.source.generationId: must be a string or null.`);
+        if (!(s.poseId === null || isStr(s.poseId))) errors.push(`${w}.source.poseId: must be a string or null.`);
+        if (!(s.poseName === null || isStr(s.poseName))) errors.push(`${w}.source.poseName: must be a string or null.`);
+        if (!isNum(s.capturedAt)) errors.push(`${w}.source.capturedAt: must be a number.`);
+        if (s.pose !== null) errors.push(...validatePose(s.pose, `${w}.source.pose`));
+        if (s.camera !== null) errors.push(...validateCamera(s.camera, `${w}.source.camera`));
+      }
+    }
+  });
+
+  const bubbleIds = new Set<string>();
+  const bubbles = Array.isArray(v.bubbles) ? v.bubbles : (errors.push('page.bubbles: must be an array.'), []);
+  if (bubbles.length > PAGE_LIMITS.bubbles) errors.push(`page.bubbles: more than ${PAGE_LIMITS.bubbles}.`);
+  bubbles.forEach((b: unknown, i: number) => {
+    const w = `page.bubbles[${i}]`;
+    if (!isRec(b) || !isId(b.id)) return void errors.push(`${w}: invalid id.`);
+    if (bubbleIds.has(b.id)) errors.push(`${w}: duplicate id.`);
+    bubbleIds.add(b.id);
+    if (!isStr(b.kind) || !BUBBLE_KINDS.includes(b.kind)) errors.push(`${w}.kind: must be speech, thought, caption or shout.`);
+    if (!isStr(b.text) || b.text.length > PAGE_LIMITS.text) errors.push(`${w}.text: must be a string of at most ${PAGE_LIMITS.text} characters.`);
+    if (!isNum(b.x) || !isNum(b.y)) errors.push(`${w}: x/y must be numbers.`);
+    if (!isNum(b.width) || !isNum(b.height) || b.width < 8 || b.height < 8) errors.push(`${w}: width/height must be at least 8.`);
+    if (!(b.tail === null || isNum(b.tail))) errors.push(`${w}.tail: must be a number or null.`);
+    if (!isNum(b.fontSize) || b.fontSize < 4) errors.push(`${w}.fontSize: must be at least 4.`);
+  });
 }

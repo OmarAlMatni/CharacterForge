@@ -1,5 +1,6 @@
 import { characterAssetIds, emptyCharacter } from './character.ts';
 import { newId } from './ids.ts';
+import { defaultPage, pageAssetIds } from './page.ts';
 import { CURRENT_SCHEMA_VERSION, migrateProjectData, ProjectFormatError } from './migrations.ts';
 import { validateProjectFile } from './schema.ts';
 import { REST } from './rig.ts';
@@ -16,6 +17,7 @@ export function createProject(name: string, canvas: { width: number; height: num
     assets: [],
     doc: { canvas: { ...canvas }, layers: [], joints: [], pose: { rotations: {}, rootOffset: { ...REST.rootOffset } }, poses: [] },
     character: emptyCharacter(),
+    page: defaultPage(),
   };
 }
 
@@ -30,6 +32,7 @@ export function parseProject(raw: unknown): { project: ProjectFile; migratedFrom
 export function referencedAssetIds(p: ProjectFile): Set<ID> {
   const ids = new Set<ID>(p.sources.map((s) => s.assetId));
   characterAssetIds(p.character).forEach((id) => ids.add(id));
+  if (p.page) pageAssetIds(p.page).forEach((id) => ids.add(id));
   for (const l of p.doc.layers) {
     if (l.assetId) ids.add(l.assetId);
     if (l.maskAssetId) ids.add(l.maskAssetId);

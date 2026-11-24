@@ -1,7 +1,8 @@
 import { emptyArtwork, emptyCharacter } from './character.ts';
+import { emptyPage } from './page.ts';
 import { DEFAULT_SHAPE } from '../pose/bodyShape.ts';
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 export class ProjectFormatError extends Error {
   readonly details: string[];
@@ -23,6 +24,9 @@ export type Migration = (data: Record<string, unknown>) => Record<string, unknow
  *  v2 -> v3: the capsule mannequin became a character body. The studio gets `shape` (body thickness controls, all at their
  *            defaults) and `artwork` (projection of the drawing onto the body, empty). Existing proportions, poses, cameras,
  *            references and results are untouched, so a project looks the same until the artist changes the new settings.
+ *  v3 -> v4: adds `page` (the manga page: panel frames, placed images, lettering). It is a NEW top-level field only — no
+ *            existing table, the pose engine or the character profile is touched, so a v3 project opens unchanged and simply
+ *            has an empty page until the artist lays one out.
  */
 export const MIGRATIONS: Record<number, Migration> = {
   1: (d) => {
@@ -44,6 +48,11 @@ export const MIGRATIONS: Record<number, Migration> = {
     if (studio.shape === undefined) studio.shape = { ...DEFAULT_SHAPE };
     if (studio.artwork === undefined) studio.artwork = emptyArtwork();
     return { ...d, schemaVersion: 3, character: { ...char, studio } };
+  },
+  3: (d) => {
+    // Additive only: a new top-level `page`. Nothing that already exists is read or rewritten.
+    if (d.page !== undefined) return { ...d, schemaVersion: 4 };
+    return { ...d, schemaVersion: 4, page: emptyPage() };
   },
 };
 

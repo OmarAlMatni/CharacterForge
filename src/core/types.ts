@@ -1,4 +1,5 @@
 import type { CharacterState } from './character.ts';
+import type { PageState } from './page.ts';
 import type { Transform, Vec2 } from './math.ts';
 
 export type { Transform, Vec2 };
@@ -97,6 +98,8 @@ export interface ProjectFile {
   doc: DocState;
   /** Character profile: original artwork, references, 3D studio state and generated results (schema v2+). */
   character: CharacterState;
+  /** The manga page: panel frames, placed images and lettering (schema v4+). */
+  page: PageState;
 }
 
 export const REST_POSE: PoseState = { rotations: {}, rootOffset: { x: 0, y: 0 } };
