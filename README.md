@@ -74,9 +74,11 @@ Everything autosaves; the last open character and workspace reopen on startup. U
 
 * The **contract** (`src/generation/types.ts`) and the **local HTTP protocol** ([docs/GENERATION_PROTOCOL.md](docs/GENERATION_PROTOCOL.md)) are implemented: request builder, multipart upload of original + references + guides + structured pose data, status check, errors, cancel, result validation, provenance, retry lineage.
 * The only built-in adapter talks to **a server on this computer** and refuses non-loopback addresses.
-* The server has a **plug-in point** (`CF_GENERATION_BACKEND=module:object`, see the protocol doc). **No model is included**, none was downloaded or run, and there is no mock that pretends to generate. Without a backend, `/generate/status` reports exactly what is missing and `/generate` answers 503.
+* The server has a **plug-in point** (`CF_GENERATION_BACKEND=module:object`, see the protocol doc). **No model is included** and there is no mock that pretends to generate. Without a backend, `/generate/status` reports exactly what is missing and `/generate` answers 503.
+* **A ComfyUI backend ships with the server** (`server/backends/comfyui.py`): set `CF_GENERATION_BACKEND=backends.comfyui:backend` and `CF_COMFYUI_WORKFLOW=<your workflow>.json`. It maps the guide pack onto your graph by placeholder tokens (`{{original}}`, `{{pose}}`, `{{reference_0}}`, `{{prompt}}`, …) or, for a graph with no tokens, by wiring the `LoadImage` nodes in order. **Install guide: [docs/COMFYUI.md](docs/COMFYUI.md)**; model presets and licences: `python tools/fetch_models.py --list`.
 * Guard: a result identical to the original, a reference or a guide image is rejected as "not generated".
-* **What you need for real output**: a pose-conditioned image model wrapped as a backend — typically ComfyUI or diffusers with a pose ControlNet plus an identity/reference adapter. Realistic hardware is a GPU with roughly 8 GB+ VRAM; CPU-only generation is impractical (the machine this was built on had 2 CPU cores, 8 GB RAM, no GPU, and could not reach Hugging Face, so no model could be evaluated). Model and licence choice are yours; check each model's licence before use.
+* **What you need for real output**: a pose-conditioned image model — typically ComfyUI with a pose ControlNet plus an identity/reference adapter. Realistic hardware is a GPU with roughly 8 GB+ VRAM; CPU-only generation is impractical. Model and licence choice are yours; check each model's licence before use.
+* **What was verified, and what was not**: the ComfyUI backend's HTTP path (upload → `/prompt` → `/history` → `/view`) is verified against a real ComfyUI 0.46.0, returning a genuine PNG. A **diffusion** model was attempted and could not run here: the sandbox is capped at 2 GiB RAM (`memory.max = 2147483648`, `oom_kill 2`) and the kernel killed ComfyUI while loading a 1.7 GB UNet. So the graph mapping and plumbing are proven; that a given checkpoint produces a good picture of your character is not, and needs a GPU. Details in [docs/COMFYUI.md](docs/COMFYUI.md) §7.
 * **Limits and safety of the server** (aggregate request size, pixel budgets, origin/host checks, one job at a time, timeouts, validated outputs) are described in [docs/SECURITY.md](docs/SECURITY.md) and the protocol doc. `CF_GENERATION_BACKEND` runs arbitrary Python as you — only point it at code you trust.
 * The next milestone (a real pose-conditioned proof of concept, with what was and was not verified about candidate models) is in [docs/AI_INTEGRATION_RECOMMENDATION.md](docs/AI_INTEGRATION_RECOMMENDATION.md).
 * Using a paid/hosted API would send your artwork off your computer. That is **not** implemented and would need a new provider plus your explicit approval.
@@ -169,7 +171,10 @@ src/
   app/         Observable store (two undo histories)
   ui/          React views: Character, Studio, Generate, 2D canvas
 server/        FastAPI: mask proposals + generation plug-in point
-docs/          GENERATION_PROTOCOL.md, SECURITY.md, AI_INTEGRATION_RECOMMENDATION.md
+server/backends/  ComfyUI generation backend (comfyui.py)
+server/workflows/ Example ComfyUI API-format workflows
+tools/         fetch_models.py — model presets, sizes and licences
+docs/          GENERATION_PROTOCOL.md, COMFYUI.md, SECURITY.md, AI_INTEGRATION_RECOMMENDATION.md
 e2e/           Playwright browser check + fixtures
 tests/         Vitest suites
 ```
