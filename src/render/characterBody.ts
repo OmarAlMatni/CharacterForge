@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { ArtworkFit, BodyMesh, BodyQuality, BodyShape, Bounds2, JointId, Mask, Pose3D, RestSkeleton, WorldPose } from '../pose/index.ts';
-import { JOINT_IDS, POSABLE_JOINTS, boundsXY, buildCharacterMesh, facingSilhouette, forwardKinematics, projectXY, relaxUvToSilhouette, skinBody, visibilityField } from '../pose/index.ts';
+import { JOINT_IDS, MAX_VIEWS, POSABLE_JOINTS, boundsXY, buildCharacterMesh, facingSilhouette, forwardKinematics, projectView, relaxUvToSilhouette, skinBody, viewWeights } from '../pose/index.ts';
 
 /**
  * The character body in Three.js: one skinned, smooth mesh built by the pure body generator (src/pose/bodyMesh.ts), plus the
@@ -22,10 +22,16 @@ export interface ArtworkImage {
   maskScale: number;
 }
 
+/** One drawing, with the angle of the view it was drawn from. */
+export interface ArtworkView extends ArtworkImage {
+  /** Degrees around Y: 0 = front, +90 = the character's left side, 180 = back. */
+  angle: number;
+}
+
 /** Everything the body needs to show the artwork. */
 export interface BodyArtwork {
-  front: ArtworkImage | null;
-  back: ArtworkImage | null;
+  /** The drawings to blend, at most `MAX_VIEWS`, sorted by angle. */
+  views: ArtworkView[];
   /** Pose the artwork was projected in. */
   bakedPose: Pose3D | null;
   show: boolean;
@@ -35,28 +41,41 @@ export interface BodyArtwork {
 
 const VERT = /* glsl */ `
 attribute float aSide;
-attribute vec2 aUvFront;
-attribute vec2 aUvBack;
-attribute float aFront;
+attribute vec2 aUv0;
+attribute vec2 aUv1;
+attribute vec2 aUv2;
+attribute vec2 aUv3;
+attribute float aW0;
+attribute float aW1;
+attribute float aW2;
+attribute float aW3;
 varying vec3 vNormal;
 varying float vSide;
-varying vec2 vUvFront;
-varying vec2 vUvBack;
-varying float vFront;
+varying vec2 vUv0;
+varying vec2 vUv1;
+varying vec2 vUv2;
+varying vec2 vUv3;
+varying float vW0;
+varying float vW1;
+varying float vW2;
+varying float vW3;
 void main() {
   vNormal = normalize(normalMatrix * normal);
   vSide = aSide;
-  vUvFront = aUvFront;
-  vUvBack = aUvBack;
-  vFront = aFront;
+  vUv0 = aUv0; vUv1 = aUv1; vUv2 = aUv2; vUv3 = aUv3;
+  vW0 = aW0; vW1 = aW1; vW2 = aW2; vW3 = aW3;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`;
 
 const FRAG = /* glsl */ `
-uniform sampler2D uFront;
-uniform sampler2D uBack;
-uniform float uHasFront;
-uniform float uHasBack;
+uniform sampler2D uTex0;
+uniform sampler2D uTex1;
+uniform sampler2D uTex2;
+uniform sampler2D uTex3;
+uniform float uHas0;
+uniform float uHas1;
+uniform float uHas2;
+uniform float uHas3;
 uniform float uShading;
 uniform float uClay;
 uniform vec3 uFill;
@@ -66,9 +85,14 @@ uniform vec3 uRightTint;
 uniform vec3 uLight;
 varying vec3 vNormal;
 varying float vSide;
-varying vec2 vUvFront;
-varying vec2 vUvBack;
-varying float vFront;
+varying vec2 vUv0;
+varying vec2 vUv1;
+varying vec2 vUv2;
+varying vec2 vUv3;
+varying float vW0;
+varying float vW1;
+varying float vW2;
+varying float vW3;
 void main() {
   vec3 base = uFill;
   if (uClay > 0.5) {
@@ -76,23 +100,18 @@ void main() {
     base = mix(base, uLeftTint, clamp(vSide, 0.0, 1.0));
     base = mix(base, uRightTint, clamp(-vSide, 0.0, 1.0));
   } else {
-    // v0.4.1 blended by the normal's Z, which is zero exactly at the silhouette: the sides fell back to the flat fill
-    // colour and the front/back textures met in a seam. vFront is a visibility weight from a depth pass instead, so the
-    // front-most surface wins all the way to the outline.
-    float wf = uHasFront > 0.5 ? vFront : 0.0;
-    float wb = uHasBack > 0.5 ? 1.0 - vFront : 0.0;
-    float sum = wf + wb;
-    if (sum > 1e-4) {
-      vec4 f = uHasFront > 0.5 ? texture2D(uFront, vUvFront) : vec4(0.0);
-      vec4 b = uHasBack > 0.5 ? texture2D(uBack, vUvBack) : vec4(0.0);
-      // the side-fill texture carries the drawing's edge colour around the curve, so a surface just outside the figure
-      // still shows the character's own colour instead of the flat fill
-      vec3 fc = f.rgb;
-      vec3 bc = b.rgb;
-      vec3 mixed = (fc * wf * f.a + bc * wb * b.a) / max(wf * f.a + wb * b.a, 1e-4);
-      float cover = clamp((wf * f.a + wb * b.a) / max(sum, 1e-4), 0.0, 1.0);
-      base = mix(base, mixed, cover);
-    }
+    // Multi-view blend: each drawing contributes in proportion to how much this surface faces its view (the weights are
+    // computed per vertex from the posed normals, see src/pose/multiView.ts). A flank is painted by the side drawing
+    // instead of the front drawing being stretched around it, and the transition between two views is a smooth band.
+    // The alpha of each sample is the side-fill's confidence, so a surface just outside a drawing still shows that
+    // drawing's edge colour rather than the flat fill.
+    vec3 acc = vec3(0.0);
+    float wsum = 0.0;
+    if (uHas0 > 0.5) { vec4 s = texture2D(uTex0, vUv0); float w = vW0 * s.a; acc += s.rgb * w; wsum += w; }
+    if (uHas1 > 0.5) { vec4 s = texture2D(uTex1, vUv1); float w = vW1 * s.a; acc += s.rgb * w; wsum += w; }
+    if (uHas2 > 0.5) { vec4 s = texture2D(uTex2, vUv2); float w = vW2 * s.a; acc += s.rgb * w; wsum += w; }
+    if (uHas3 > 0.5) { vec4 s = texture2D(uTex3, vUv3); float w = vW3 * s.a; acc += s.rgb * w; wsum += w; }
+    if (wsum > 1e-4) base = mix(base, acc / wsum, clamp(wsum, 0.0, 1.0));
   }
   vec3 n = normalize(vNormal);
   if (!gl_FrontFacing) n = -n; // the model is made of overlapping body-part shells: seeing the inside of one is fine, a hole is not
@@ -148,10 +167,14 @@ export class CharacterBody {
       fragmentShader: FRAG,
       side: THREE.DoubleSide,
       uniforms: {
-        uFront: { value: blank },
-        uBack: { value: blank },
-        uHasFront: { value: 0 },
-        uHasBack: { value: 0 },
+        uTex0: { value: blank },
+        uTex1: { value: blank },
+        uTex2: { value: blank },
+        uTex3: { value: blank },
+        uHas0: { value: 0 },
+        uHas1: { value: 0 },
+        uHas2: { value: 0 },
+        uHas3: { value: 0 },
         uShading: { value: 1 },
         uClay: { value: 1 },
         uFill: { value: new THREE.Color('#c9ced8') },
@@ -198,9 +221,10 @@ export class CharacterBody {
     g.setAttribute('position', this.posAttr);
     g.setAttribute('normal', this.norAttr);
     g.setAttribute('aSide', new THREE.BufferAttribute(b.side, 1));
-    g.setAttribute('aUvFront', new THREE.BufferAttribute(new Float32Array(b.vertexCount * 2), 2));
-    g.setAttribute('aUvBack', new THREE.BufferAttribute(new Float32Array(b.vertexCount * 2), 2));
-    g.setAttribute('aFront', new THREE.BufferAttribute(new Float32Array(b.vertexCount), 1));
+    for (let k = 0; k < MAX_VIEWS; k++) {
+      g.setAttribute(`aUv${k}`, new THREE.BufferAttribute(new Float32Array(b.vertexCount * 2), 2));
+      g.setAttribute(`aW${k}`, new THREE.BufferAttribute(new Float32Array(b.vertexCount), 1));
+    }
     g.setIndex(new THREE.BufferAttribute(b.indices, 1));
     this.geometry = g;
     this.mesh = new THREE.Mesh(g, this.material);
@@ -221,7 +245,8 @@ export class CharacterBody {
   setArtwork(art: BodyArtwork | null): void {
     this.artwork = art;
     const u = this.material.uniforms as Record<string, { value: unknown }>;
-    const on = !!art && art.show && !!art.bakedPose && (!!art.front || !!art.back) && !!this.body && !!this.rest;
+    const views = art ? art.views.slice(0, MAX_VIEWS) : [];
+    const on = !!art && art.show && !!art.bakedPose && views.length > 0 && !!this.body && !!this.rest;
     u.uClay!.value = on ? 0 : 1;
     u.uShading!.value = on ? art!.shading : 1;
     if (!on || !art || !this.body || !this.rest) {
@@ -229,11 +254,12 @@ export class CharacterBody {
       return;
     }
     (u.uFill!.value as THREE.Color).set(art.fill);
-    u.uHasFront!.value = art.front ? 1 : 0;
-    u.uHasBack!.value = art.back ? 1 : 0;
-    if (art.front) u.uFront!.value = this.tex(art.front.image);
-    if (art.back) u.uBack!.value = this.tex(art.back.image);
-    const key = JSON.stringify([art.front?.fit, art.front?.width, art.front?.height, art.back?.fit, art.back?.width, art.back?.height, art.bakedPose, this.shapeKey]);
+    for (let k = 0; k < MAX_VIEWS; k++) {
+      const v = views[k];
+      u[`uHas${k}`]!.value = v ? 1 : 0;
+      if (v) u[`uTex${k}`]!.value = this.tex(v.image);
+    }
+    const key = JSON.stringify([views.map((v) => [v.angle, v.fit, v.width, v.height]), art.bakedPose, this.shapeKey]);
     if (key === this.artworkKey) return;
     this.artworkKey = key;
     // positions and normals of the body in the pose the artwork was projected in
@@ -242,23 +268,21 @@ export class CharacterBody {
     const nor = new Float32Array(n * 3);
     skinBody(this.body, forwardKinematics(this.rest, art.bakedPose!), pos, nor);
     const g = this.geometry!;
-    const uvF = g.getAttribute('aUvFront') as THREE.BufferAttribute;
-    const uvB = g.getAttribute('aUvBack') as THREE.BufferAttribute;
-    const front = g.getAttribute('aFront') as THREE.BufferAttribute;
-    // Texture coordinates are solved against the drawing's outline, not just projected: the mesh's silhouette boundary is
-    // pinned to the nearest pixel of the figure's outline and the interior is relaxed (see src/pose/uvRelax.ts). The
-    // front solve only sees front-facing triangles and the back solve only back-facing ones.
+    // Texture coordinates are solved against each drawing's outline, not just projected: the mesh's silhouette boundary is
+    // pinned to the nearest pixel of that drawing's figure outline and the interior is relaxed (see src/pose/uvRelax.ts).
+    // Each view is projected along its OWN axis (`projectView`), and only the shell facing that view is used for the
+    // silhouette, so a side drawing is fitted to the body's depth rather than to its width.
     // `fit` is in FULL-resolution artwork pixels; the mask is at working resolution, so the solve runs in mask space
     // (maskScale = mask pixels per full-res pixel) and the result is normalised by the mask size.
-    const bake = (img: ArtworkImage, mirror: boolean, frontShell: boolean): Float32Array => {
+    const bake = (img: ArtworkView): Float32Array => {
       const s = img.maskScale;
-      const xyFull = projectXY(pos, n, img.fit, mirror);
+      const xyFull = projectView(pos, n, img.fit, img.angle);
       const xy = new Float32Array(n * 2);
       for (let i = 0; i < n; i++) {
         xy[i * 2] = xyFull[i * 2]! * s;
         xy[i * 2 + 1] = xyFull[i * 2 + 1]! * s;
       }
-      const sil = facingSilhouette(xy, this.body!.indices, img.mask.w, img.mask.h, frontShell);
+      const sil = facingSilhouette(xy, this.body!.indices, img.mask.w, img.mask.h, true);
       const r = relaxUvToSilhouette({ xy, indices: this.body!.indices, mask: img.mask, silhouette: sil });
       const uv = new Float32Array(n * 2);
       for (let i = 0; i < n; i++) {
@@ -267,21 +291,22 @@ export class CharacterBody {
       }
       return uv;
     };
-    if (art.front) uvF.array.set(bake(art.front, false, true));
-    if (art.back) uvB.array.set(bake(art.back, true, false));
-    // Front/back weight from a depth pass: the front-most surface at each pixel wins, all the way to the outline.
-    const ref = art.front ?? art.back!;
-    const s = ref.maskScale;
-    const xyRef = projectXY(pos, n, ref.fit, false);
-    const xyMask = new Float32Array(n * 2);
-    const depth = new Float32Array(n);
-    for (let i = 0; i < n; i++) {
-      xyMask[i * 2] = xyRef[i * 2]! * s;
-      xyMask[i * 2 + 1] = xyRef[i * 2 + 1]! * s;
-      depth[i] = -pos[i * 3 + 2]!; // view depth along +Z (the projection axis)
+    // Per-vertex blend weights from the posed normals: a surface is painted by the view it faces (src/pose/multiView.ts).
+    const weights = viewWeights(nor, n, views.map((v) => v.angle));
+    for (let k = 0; k < MAX_VIEWS; k++) {
+      const uvAttr = g.getAttribute(`aUv${k}`) as THREE.BufferAttribute;
+      const wAttr = g.getAttribute(`aW${k}`) as THREE.BufferAttribute;
+      const v = views[k];
+      if (v) {
+        uvAttr.array.set(bake(v));
+        for (let i = 0; i < n; i++) wAttr.array[i] = weights[i * views.length + k]!;
+      } else {
+        (uvAttr.array as Float32Array).fill(0);
+        (wAttr.array as Float32Array).fill(0);
+      }
+      uvAttr.needsUpdate = true;
+      wAttr.needsUpdate = true;
     }
-    front.array.set(visibilityField(xyMask, depth, this.body.indices, ref.mask.w, ref.mask.h));
-    uvF.needsUpdate = uvB.needsUpdate = front.needsUpdate = true;
   }
 
   private buildMarkers(rest: RestSkeleton): void {
