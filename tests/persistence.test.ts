@@ -100,7 +100,7 @@ describe('migration safety', () => {
     const { id, v2 } = await storedV2();
     const { project, migratedFrom } = await loadProject(db, id);
     expect(migratedFrom).toBe(2);
-    expect(project.schemaVersion).toBe(3);
+    expect(project.schemaVersion).toBe(4);
     const rows = await db.backups.toArray();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ projectId: id, fromVersion: 2 });
@@ -112,7 +112,7 @@ describe('migration safety', () => {
     const { id, v2 } = await storedV2();
     const first = await loadProject(db, id);
     await saveProject(db, { ...first.project, updatedAt: 500 });
-    expect((await db.projects.get(id))!.data.schemaVersion).toBe(3);
+    expect((await db.projects.get(id))!.data.schemaVersion).toBe(4);
     const again = await loadProject(db, id);
     expect(again.migratedFrom).toBeNull();
     expect((await db.backups.get(`${id}@v2`))!.data).toEqual(v2);

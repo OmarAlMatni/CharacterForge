@@ -1,5 +1,6 @@
 import { emptyCharacter } from '../src/core/character.ts';
 import { CURRENT_SCHEMA_VERSION } from '../src/core/migrations.ts';
+import { defaultPage } from '../src/core/page.ts';
 import { makeRasterLayer } from '../src/core/layers.ts';
 import type { RasterLayerInit } from '../src/core/layers.ts';
 import type { DocState, Joint, Layer, ProjectFile } from '../src/core/types.ts';
@@ -37,6 +38,7 @@ export function validProject(): ProjectFile {
     assets: ['l1', 'l2'].map((n) => ({ id: `asset_${n}`, kind: 'layer' as const, mime: 'image/png', width: 100, height: 50, size: 10 })),
     doc: emptyDoc(layers, [joint('j1', null, 10, 10), joint('j2', 'j1', 0, 40)]),
     character: emptyCharacter(),
+    page: defaultPage(),
   };
 }
 

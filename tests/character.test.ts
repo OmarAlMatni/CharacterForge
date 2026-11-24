@@ -349,7 +349,7 @@ describe('schema v3 migration (character body and artwork projection)', () => {
     const before = structuredClone(v2.character.studio);
     const { project, migratedFrom } = parseProject(structuredClone(v2));
     expect(migratedFrom).toBe(2);
-    expect(project.schemaVersion).toBe(3);
+    expect(project.schemaVersion).toBe(4);
     const st = project.character.studio;
     expect(st.shape).toEqual(DEFAULT_SHAPE);
     expect(st.artwork.front).toBeNull();
@@ -378,7 +378,7 @@ describe('schema v3 migration (character body and artwork projection)', () => {
   it('upgrades a v1 project all the way to v3 in one go', () => {
     const { project, migratedFrom } = parseProject(legacyV1Project());
     expect(migratedFrom).toBe(1);
-    expect(project.schemaVersion).toBe(3);
+    expect(project.schemaVersion).toBe(4);
     expect(project.character.studio.shape).toEqual(DEFAULT_SHAPE);
     expect(project.character.studio.artwork.front).toBeNull();
   });

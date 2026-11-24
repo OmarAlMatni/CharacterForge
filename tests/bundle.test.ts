@@ -227,7 +227,7 @@ describe('hostile bundles', () => {
     files['project.json'] = strToU8(JSON.stringify({ ...project, schemaVersion: 2, character: { ...project.character, studio: studioV2 } }));
     const back = importBundle(zipSync(files));
     expect(back.migratedFrom).toBe(2);
-    expect(back.project.schemaVersion).toBe(3);
+    expect(back.project.schemaVersion).toBe(4);
     for (const [id, a] of assets) expect([...back.assets.get(id)!.bytes]).toEqual([...a.bytes]);
   });
   it('migrations do not mutate the data they are given', async () => {
@@ -241,7 +241,7 @@ describe('hostile bundles', () => {
     const deepFreeze = (o: unknown): void => { if (o && typeof o === 'object') { Object.freeze(o); Object.values(o).forEach(deepFreeze); } };
     deepFreeze(v2);
     const out = migrateProjectData(v2);
-    expect(out.data.schemaVersion).toBe(3);
+    expect(out.data.schemaVersion).toBe(4);
     expect(v2).toEqual(frozen);
   });
 });
