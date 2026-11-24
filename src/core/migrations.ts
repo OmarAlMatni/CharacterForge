@@ -1,7 +1,7 @@
 import { emptyArtwork, emptyCharacter } from './character.ts';
 import { DEFAULT_SHAPE } from '../pose/bodyShape.ts';
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 export class ProjectFormatError extends Error {
   readonly details: string[];
@@ -23,6 +23,9 @@ export type Migration = (data: Record<string, unknown>) => Record<string, unknow
  *  v2 -> v3: the capsule mannequin became a character body. The studio gets `shape` (body thickness controls, all at their
  *            defaults) and `artwork` (projection of the drawing onto the body, empty). Existing proportions, poses, cameras,
  *            references and results are untouched, so a project looks the same until the artist changes the new settings.
+ *  v3 -> v4: the projection became multi-view. `artwork.views` is added, seeded from the existing front/back slots at 0° and
+ *            180°, so a v3 project renders exactly as it did until the artist adds a side or three-quarter drawing. Nothing
+ *            else changes: the pose engine, the data model's other fields and every stored result are untouched.
  */
 export const MIGRATIONS: Record<number, Migration> = {
   1: (d) => {
@@ -44,6 +47,28 @@ export const MIGRATIONS: Record<number, Migration> = {
     if (studio.shape === undefined) studio.shape = { ...DEFAULT_SHAPE };
     if (studio.artwork === undefined) studio.artwork = emptyArtwork();
     return { ...d, schemaVersion: 3, character: { ...char, studio } };
+  },
+  3: (d) => {
+    const c = d.character;
+    if (typeof c !== 'object' || c === null || Array.isArray(c)) return { ...d, schemaVersion: 4 }; // left for validation to report
+    const char = c as Record<string, unknown>;
+    const st = char.studio;
+    if (typeof st !== 'object' || st === null || Array.isArray(st)) return { ...d, schemaVersion: 4 };
+    const studio = { ...(st as Record<string, unknown>) };
+    const art = studio.artwork;
+    if (typeof art === 'object' && art !== null && !Array.isArray(art)) {
+      const a = art as Record<string, unknown>;
+      if (!Array.isArray(a.views)) {
+        // seed the view set from the v3 front/back slots, so the render is unchanged until a view is added
+        const views: unknown[] = [];
+        if (a.front) views.push({ ...(a.front as Record<string, unknown>), angle: 0 });
+        if (a.back) views.push({ ...(a.back as Record<string, unknown>), angle: 180 });
+        studio.artwork = { ...a, views };
+      }
+    } else {
+      studio.artwork = emptyArtwork();
+    }
+    return { ...d, schemaVersion: 4, character: { ...char, studio } };
   },
 };
 
