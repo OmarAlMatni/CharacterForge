@@ -1,0 +1,22 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": { "image": "{{original}}" }
+  },
+  "2": {
+    "class_type": "LoadImage",
+    "inputs": { "image": "{{pose}}" }
+  },
+  "3": {
+    "class_type": "ImageScale",
+    "inputs": { "image": ["1", 0], "upscale_method": "lanczos", "width": "{{width}}", "height": "{{height}}", "crop": "disabled" }
+  },
+  "4": {
+    "class_type": "ImageBlend",
+    "inputs": { "image1": ["3", 0], "image2": ["2", 0], "blend_factor": 0.5, "blend_mode": "normal" }
+  },
+  "5": {
+    "class_type": "SaveImage",
+    "inputs": { "images": ["4", 0], "filename_prefix": "characterforge-passthrough" }
+  }
+}
