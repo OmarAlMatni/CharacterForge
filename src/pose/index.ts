@@ -15,3 +15,5 @@ export * from './glb.ts';
 export * from './bodyModel.ts';
 export * from './characterMesh.ts';
 export * from './texturePad.ts';
+export * from './uvRelax.ts';
+export * from './sideFill.ts';

@@ -1,5 +1,5 @@
 import type { Box, Mask } from '../pose/index.ts';
-import { averageFigureColor, maskBounds, maskFromImage, padFigureTexture } from '../pose/index.ts';
+import { averageFigureColor, extrudeSilhouetteColor, maskBounds, maskFromImage, sideFillBand } from '../pose/index.ts';
 import { ctx2d, decodeToCanvas, newCanvas } from '../render/pngEncode.ts';
 
 /**
@@ -37,11 +37,16 @@ function scaled(src: HTMLCanvasElement, max: number): { canvas: HTMLCanvasElemen
   return { canvas: c, scale: c.width / src.width };
 }
 
-/** Figure pixels kept, the background replaced by the nearest figure colour for a few percent of the image (see `padFigureTexture`). */
+/**
+ * The texture projected onto the body: the figure with its outline colour extruded OUTWARD along the silhouette, so a
+ * surface just outside the drawing still shows the character's own colour instead of the flat fill (see
+ * `extrudeSilhouetteColor`). The band scales with the figure, not the canvas, so it covers the flank of a body wider than
+ * the drawing.
+ */
 function projectionTexture(tex: HTMLCanvasElement): HTMLCanvasElement {
   const px = ctx2d(tex).getImageData(0, 0, tex.width, tex.height);
   const mask = maskFromImage({ w: px.width, h: px.height, data: px.data });
-  const padded = padFigureTexture(px.data, px.width, px.height, mask, Math.max(4, Math.round(0.04 * Math.max(px.width, px.height))));
+  const padded = extrudeSilhouetteColor(px.data, px.width, px.height, mask, sideFillBand(mask));
   const c = newCanvas(tex.width, tex.height);
   ctx2d(c).putImageData(new ImageData(padded as Uint8ClampedArray<ArrayBuffer>, px.width, px.height), 0, 0);
   return c;

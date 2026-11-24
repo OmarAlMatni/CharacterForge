@@ -96,3 +96,28 @@ export function averageFigureColor(img: Rgba, mask: Mask): string {
   const hex = (v: number): string => Math.round(v / n).toString(16).padStart(2, '0');
   return `#${hex(r)}${hex(g)}${hex(b)}`;
 }
+
+/**
+ * The silhouette of only the triangles of one winding (front-facing or back-facing) in the projected image.
+ *
+ * v0.4.1's `bodySilhouette` rasterised every triangle, so the "front" silhouette included the back of the body and the
+ * boundary it produced was the union of both shells. The UV relaxation needs the front shell's own outline, so it can
+ * pin the drawing's outline to the surface that is actually seen from the front.
+ *
+ * `front` = true keeps triangles whose projected winding is counter-clockwise (the front shell of a closed mesh seen
+ * from +Z); false keeps the other winding.
+ */
+export function facingSilhouette(xy: Float32Array, indices: Uint32Array, w: number, h: number, front: boolean): Mask {
+  const keep = new Uint32Array(indices.length);
+  let k = 0;
+  for (let t = 0; t < indices.length; t += 3) {
+    const a = indices[t]! * 2, b = indices[t + 1]! * 2, c = indices[t + 2]! * 2;
+    const area = (xy[b]! - xy[a]!) * (xy[c + 1]! - xy[a + 1]!) - (xy[c]! - xy[a]!) * (xy[b + 1]! - xy[a + 1]!);
+    if ((area > 0) === front) {
+      keep[k++] = indices[t]!;
+      keep[k++] = indices[t + 1]!;
+      keep[k++] = indices[t + 2]!;
+    }
+  }
+  return rasterizeTriangles(xy, keep.subarray(0, k), w, h);
+}
