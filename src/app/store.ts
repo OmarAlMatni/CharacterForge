@@ -1125,7 +1125,7 @@ export class AppStore {
     const a = c.studio.artwork;
     const img = (p: typeof a.front) => {
       const hit = p ? this.artCache.get(p.assetId) : null;
-      return p && hit ? { image: hit.projection as TexImageSource, fit: p.fit, width: p.width, height: p.height } : null;
+      return p && hit ? { image: hit.projection as TexImageSource, fit: p.fit, width: p.width, height: p.height, mask: hit.mask, maskScale: hit.maskScale } : null;
     };
     const front = img(a.front);
     const back = img(a.back);
